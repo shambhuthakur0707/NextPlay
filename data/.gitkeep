@@ -1,0 +1,12 @@
+# This directory holds all data files and trained models.
+# Copy your files from Google Drive here:
+#
+#   model_ready_final.csv
+#   shot_profiles.csv
+#   player_impact_true.csv
+#   prediction_log.csv
+#   backtest_results.csv
+#   elo_ratings.csv
+#   model_A_home.pkl
+#   model_B_away.pkl
+#   model_C_total.pkl

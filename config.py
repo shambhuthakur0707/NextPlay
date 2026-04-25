@@ -1,0 +1,230 @@
+# -*- coding: utf-8 -*-
+"""
+NextPlay -- Configuration
+========================
+Central configuration for all constants, paths, and feature definitions.
+Uses the V8 model with 100 features (SoS + player impact + margin rolling + ELO).
+"""
+
+import os
+
+# ????????????????????????????????????????????????????????????
+# PATHS
+# ????????????????????????????????????????????????????????????
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+# Data files
+GAMELOGS_RAW_PATH       = os.path.join(DATA_DIR, "gamelogs_raw.csv")
+GAMELOGS_ALL_PATH       = os.path.join(DATA_DIR, "gamelogs_all.csv")
+GAMES_ALL_PATH          = os.path.join(DATA_DIR, "games_all.csv")
+GAMES_SOS_PATH          = os.path.join(DATA_DIR, "games_sos.csv")
+MODEL_READY_PATH        = os.path.join(DATA_DIR, "model_ready_final.csv")
+SHOT_PROFILES_PATH      = os.path.join(DATA_DIR, "shot_profiles.csv")
+PLAYER_IMPACT_PATH      = os.path.join(DATA_DIR, "player_impact_true.csv")
+PREDICTION_LOG_PATH     = os.path.join(DATA_DIR, "prediction_log.csv")
+BACKTEST_RESULTS_PATH   = os.path.join(DATA_DIR, "backtest_results.csv")
+ELO_RATINGS_PATH        = os.path.join(DATA_DIR, "elo_ratings.csv")
+MARKET_LINES_PATH       = os.path.join(DATA_DIR, "market_lines.csv")
+
+# Model files
+MODEL_A_PATH = os.path.join(DATA_DIR, "model_A_home.pkl")
+MODEL_B_PATH = os.path.join(DATA_DIR, "model_B_away.pkl")
+MODEL_C_PATH = os.path.join(DATA_DIR, "model_C_total.pkl")
+
+
+# ????????????????????????????????????????????????????????????
+# NBA TEAMS
+# ????????????????????????????????????????????????????????????
+
+NBA_TEAMS = sorted([
+    "ATL", "BOS", "BKN", "CHA", "CHI", "CLE", "DAL", "DEN", "DET", "GSW",
+    "HOU", "IND", "LAC", "LAL", "MEM", "MIA", "MIL", "MIN", "NOP", "NYK",
+    "OKC", "ORL", "PHI", "PHX", "POR", "SAC", "SAS", "TOR", "UTA", "WAS",
+])
+
+SEASONS = ["2023-24", "2024-25", "2025-26"]
+
+
+# ????????????????????????????????????????????????????????????
+# FEATURE COLUMNS -- V8 FINAL (100 features)
+# ????????????????????????????????????????????????????????????
+
+# Rolling form -- home team
+ROLLING_HOME_FEATURES = [
+    "HOME_ROLL10_PTS", "HOME_ROLL10_FG_PCT", "HOME_ROLL10_FG3_PCT",
+    "HOME_ROLL10_FT_PCT", "HOME_ROLL10_FG3A", "HOME_ROLL10_FTA",
+    "HOME_ROLL10_AST", "HOME_ROLL10_TOV", "HOME_ROLL10_OREB",
+    "HOME_ROLL10_REB", "HOME_ROLL10_PF", "HOME_ROLL10_TOTAL_PTS",
+    "HOME_ROLL10_POSS_EST",
+    "HOME_EFG_ROLL10", "HOME_TS_ROLL10",
+    "HOME_ROLL5_PTS", "HOME_ROLL15_PTS", "HOME_FORM_TREND",
+]
+
+# Rolling form -- away team
+ROLLING_AWAY_FEATURES = [
+    "AWAY_ROLL10_PTS", "AWAY_ROLL10_FG_PCT", "AWAY_ROLL10_FG3_PCT",
+    "AWAY_ROLL10_FT_PCT", "AWAY_ROLL10_FG3A", "AWAY_ROLL10_FTA",
+    "AWAY_ROLL10_AST", "AWAY_ROLL10_TOV", "AWAY_ROLL10_OREB",
+    "AWAY_ROLL10_REB", "AWAY_ROLL10_PF",
+    "AWAY_ROLL10_POSS_EST",
+    "AWAY_EFG_ROLL10", "AWAY_TS_ROLL10",
+    "AWAY_ROLL5_PTS", "AWAY_ROLL15_PTS", "AWAY_FORM_TREND",
+]
+
+# Combined rolling signals
+COMBINED_FEATURES = [
+    "COMBINED_PTS_ROLL10", "COMBINED_FG3A_ROLL10", "COMBINED_FTA_ROLL10",
+    "COMBINED_POSS_ROLL10", "TOV_DIFF_ROLL10", "OREB_DIFF_ROLL10",
+]
+
+# Matchup-specific history
+MATCHUP_FEATURES = [
+    "MATCHUP_AVG_TOTAL", "MATCHUP_HOME_WIN", "MATCHUP_MEETINGS",
+]
+
+# Rest + momentum
+REST_STREAK_FEATURES = [
+    "HOME_REST_DAYS", "AWAY_REST_DAYS", "REST_DAYS_DIFF",
+    "HOME_TRAVEL_DIST", "AWAY_TRAVEL_DIST", "TRAVEL_DIFF",
+    "HOME_STREAK", "AWAY_STREAK", "STREAK_DIFF",
+]
+
+# Context
+CONTEXT_FEATURES = [
+    "SEASON_STAGE", "HOME_COURT_STRENGTH", "AWAY_TEAM_STRENGTH",
+    "STRENGTH_DIFF", "HOME_ADVANTAGE_SCORE",
+]
+
+# Defensive
+DEFENSIVE_FEATURES = [
+    "HOME_DEF_ROLL10", "AWAY_DEF_ROLL10",
+    "COMBINED_DEF_ROLL10", "EXPECTED_TOTAL",
+]
+
+# Shot profiles
+SHOT_FEATURES = [
+    "HOME_PAINT_RATE", "HOME_3PT_RATE", "HOME_MID_RATE",
+    "HOME_PAINT_PCT", "HOME_3PT_PCT", "HOME_PTS_PER_SHOT",
+    "AWAY_PAINT_RATE", "AWAY_3PT_RATE", "AWAY_MID_RATE",
+    "AWAY_PAINT_PCT", "AWAY_3PT_PCT", "AWAY_PTS_PER_SHOT",
+    "COMBINED_3PT_RATE", "COMBINED_PAINT_RATE",
+    "COMBINED_PTS_PER_SHOT", "STYLE_MISMATCH", "EFFICIENCY_EDGE",
+]
+
+# Exponential weighted moving averages
+EWM_FEATURES = [
+    "HOME_EWM_PTS", "HOME_EWM_FG_PCT", "HOME_EWM_FG3_PCT", "HOME_EWM_DEF",
+    "AWAY_EWM_PTS", "AWAY_EWM_FG_PCT", "AWAY_EWM_FG3_PCT", "AWAY_EWM_DEF",
+    "EWM_EXPECTED_TOTAL", "HOME_MOMENTUM", "AWAY_MOMENTUM", "COMBINED_MOMENTUM",
+]
+
+# Strength of Schedule
+SOS_FEATURES = [
+    "HOME_SOS_DEF", "AWAY_SOS_DEF", "SOS_DIFF",
+    "HOME_ADJ_OFF", "AWAY_ADJ_OFF",
+    "HOME_ADJ_DEF", "AWAY_ADJ_DEF",
+    "SOS_EXPECTED_HOME", "SOS_EXPECTED_AWAY", "SOS_EXPECTED_TOTAL",
+]
+
+# Player impact
+PLAYER_FEATURES = [
+    "HOME_TOP_IMPACT", "HOME_TOP3_IMPACT", "HOME_AVG_IMPACT",
+    "HOME_DEPTH", "HOME_STAR_DEP", "HOME_BENCH",
+    "HOME_AVG_MISS", "HOME_TOP_MISS", "HOME_TOP3_MISS",
+    "HOME_IMPACT_AVAIL",
+    "AWAY_TOP_IMPACT", "AWAY_TOP3_IMPACT", "AWAY_AVG_IMPACT",
+    "AWAY_DEPTH", "AWAY_STAR_DEP", "AWAY_BENCH",
+    "AWAY_AVG_MISS", "AWAY_TOP_MISS", "AWAY_TOP3_MISS",
+    "AWAY_IMPACT_AVAIL",
+]
+
+# Margin rolling (V7 addition -- garbage time filter)
+MARGIN_FEATURES = [
+    "HOME_ROLL10_MARGIN",
+    "AWAY_ROLL10_MARGIN",
+]
+
+# ELO ratings (V8 addition)
+ELO_FEATURES = [
+    "HOME_ELO", "AWAY_ELO", "ELO_DIFF", "ELO_EXPECTED",
+]
+
+# ?? Combined final feature list ??????????????????????????????
+FEATURE_COLS_FINAL = (
+    ROLLING_HOME_FEATURES
+    + ROLLING_AWAY_FEATURES
+    + COMBINED_FEATURES
+    + MATCHUP_FEATURES
+    + REST_STREAK_FEATURES
+    + CONTEXT_FEATURES
+    + DEFENSIVE_FEATURES
+    + SHOT_FEATURES
+    + EWM_FEATURES
+    + SOS_FEATURES
+    + PLAYER_FEATURES
+    + MARGIN_FEATURES
+    + ELO_FEATURES
+)
+
+# Metadata columns (not features -- kept for reference)
+META_COLS = [
+    "GAME_ID", "GAME_DATE", "SEASON",
+    "HOME_TEAM", "AWAY_TEAM",
+    "HOME_PTS", "AWAY_PTS", "TOTAL_PTS", "HOME_WIN",
+]
+
+# Target columns
+TARGET_HOME  = "HOME_PTS"
+TARGET_AWAY  = "AWAY_PTS"
+TARGET_TOTAL = "TOTAL_PTS"
+TARGET_WIN   = "HOME_WIN"
+
+
+# ????????????????????????????????????????????????????????????
+# MODEL HYPERPARAMETERS
+# ????????????????????????????????????????????????????????????
+
+RF_PARAMS = {
+    "n_estimators": 400,
+    "max_depth": 9,
+    "min_samples_leaf": 15,
+    "random_state": 42,
+    "n_jobs": -1,
+}
+
+LGB_PARAMS = {
+    "n_estimators": 500,
+    "learning_rate": 0.05,
+    "num_leaves": 31,
+    "min_child_samples": 20,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "random_state": 42,
+    "verbose": -1,
+}
+
+
+# ????????????????????????????????????????????????????????????
+# TRAINING CONFIG
+# ????????????????????????????????????????????????????????????
+
+# Garbage time filter: remove blowouts > 25pt margin from training
+BLOWOUT_MARGIN_THRESHOLD = 25
+
+# OT detection: total > 240 AND margin < 10
+OT_TOTAL_THRESHOLD  = 240
+OT_MARGIN_THRESHOLD = 10
+
+# Rolling window size
+ROLLING_WINDOW = 10
+
+# EWM span
+EWM_SPAN = 10
+
+# API rate limit delay (seconds between calls)
+API_DELAY = 0.6
+
+# Model version tag
+MODEL_VERSION = "v8"

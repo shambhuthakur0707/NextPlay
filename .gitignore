@@ -1,0 +1,42 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Data files (large — not tracked in git)
+data/*.csv
+data/*.pkl
+data/*.zip
+*.csv
+*.pkl
+*.zip
+
+# Keep data directory structure
+!data/.gitkeep
+
+# Colab artifacts
+.ipynb_checkpoints/
+
+# Old deploy folder
+nba_deploy_ready/
+
+# Misc
+*.docx
+New folder/
+nba_dataset/
