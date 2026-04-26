@@ -1,0 +1,21 @@
+{
+  "name": "NextPlay Codespace",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "postCreateCommand": "bash .devcontainer/postCreate.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
+        "python.analysis.typeCheckingMode": "basic"
+      }
+    }
+  },
+  "remoteEnv": {
+    "PYTHONUNBUFFERED": "1"
+  }
+}
