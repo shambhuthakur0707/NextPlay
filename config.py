@@ -27,7 +27,6 @@ PREDICTION_LOG_PATH     = os.path.join(DATA_DIR, "prediction_log.csv")
 BACKTEST_RESULTS_PATH   = os.path.join(DATA_DIR, "backtest_results.csv")
 ELO_RATINGS_PATH        = os.path.join(DATA_DIR, "elo_ratings.csv")
 MARKET_LINES_PATH       = os.path.join(DATA_DIR, "market_lines.csv")
-ODDS_API_KEY            = os.getenv("ODDS_API_KEY", "39df67b86f1fff456af0953b3f1341a0")
 ODDS_API_BASE_URL       = os.getenv("ODDS_API_BASE_URL", "https://api.the-odds-api.com/v4")
 ODDS_SPORT_KEY          = os.getenv("ODDS_SPORT_KEY", "basketball_nba")
 
