@@ -8,6 +8,8 @@ import pandas as pd
 import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+from models.stacking import build_total_meta_features
+
 
 def evaluate_model(model, X_test, y_test, name="Model"):
     """
@@ -55,13 +57,23 @@ def evaluate_all_models(models, X_test, test_df):
 
     Args:
         models: dict with model_A, model_B, model_C
-        X_test: test features DataFrame
+        X_test: base feature features DataFrame
         test_df: test DataFrame (for target columns)
 
     Returns:
         dict with results for each model
     """
     results = {}
+
+    home_preds = models["model_A"].predict(X_test)
+    away_preds = models["model_B"].predict(X_test)
+    meta_cols = list(getattr(models["model_C"], "feature_names_in_", []))
+    total_X = build_total_meta_features(
+        X_test,
+        home_preds,
+        away_preds,
+        feature_cols=meta_cols,
+    )
 
     results["home"] = evaluate_model(
         models["model_A"], X_test, test_df["HOME_PTS"], "Home Score (A)"
@@ -70,7 +82,7 @@ def evaluate_all_models(models, X_test, test_df):
         models["model_B"], X_test, test_df["AWAY_PTS"], "Away Score (B)"
     )
     results["total"] = evaluate_model(
-        models["model_C"], X_test, test_df["TOTAL_PTS"], "Total Points (C)"
+        models["model_C"], total_X, test_df["TOTAL_PTS"], "Total Points (C)"
     )
 
     return results
@@ -139,15 +151,30 @@ def error_breakdown_by_team(model, X_test, y_test, test_df, team_col="HOME_TEAM"
     return team_mae
 
 
-def error_breakdown_by_total_range(model_C, X_test, y_test):
+def error_breakdown_by_total_range(model_C, X_test, y_test,
+                                    model_A=None, model_B=None):
     """
     Break down total points model error by score range.
     Helps identify if model struggles with high/low scoring games.
 
+    If the total model is stacked, pass model_A and model_B so the helper
+    can build the meta-feature matrix before scoring.
+
     Returns:
         DataFrame with per-range MAE
     """
-    preds = model_C.predict(X_test)
+    if model_A is not None and model_B is not None:
+        meta_cols = list(getattr(model_C, "feature_names_in_", []))
+        X_total = build_total_meta_features(
+            X_test,
+            model_A.predict(X_test),
+            model_B.predict(X_test),
+            feature_cols=meta_cols,
+        )
+    else:
+        X_total = X_test
+
+    preds = model_C.predict(X_total)
     actuals = y_test.values
     errors = np.abs(preds - actuals)
 

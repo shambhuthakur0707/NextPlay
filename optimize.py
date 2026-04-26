@@ -9,9 +9,11 @@ from sklearn.metrics import mean_absolute_error
 
 from config import (
     MODEL_READY_PATH, FEATURE_COLS_FINAL,
+    STACKED_TOTAL_FEATURES,
     MODEL_A_PATH, MODEL_B_PATH, MODEL_C_PATH,
     BLOWOUT_MARGIN_THRESHOLD, OT_TOTAL_THRESHOLD, OT_MARGIN_THRESHOLD,
 )
+from models.stacking import build_total_meta_features
 
 warnings.filterwarnings("ignore")
 
@@ -140,6 +142,109 @@ def _walk_forward_mae(
     return float(np.mean(errors))
 
 
+def _stacked_total_time_split_mae(model_df, home_model_fn, away_model_fn,
+                                  meta_model_fn, feature_cols,
+                                  apply_filter=True):
+    df = model_df.copy()
+    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+    df = df.sort_values("GAME_DATE").reset_index(drop=True)
+
+    split_idx = int(len(df) * 0.80)
+    train = df.iloc[:split_idx].copy()
+    test = df.iloc[split_idx:].copy()
+
+    if apply_filter:
+        train = _apply_garbage_filter(train)
+
+    train = train.dropna(subset=feature_cols)
+    test = test.dropna(subset=feature_cols)
+    if len(train) < 50 or len(test) == 0:
+        return np.nan
+
+    home_model = home_model_fn()
+    away_model = away_model_fn()
+    home_model.fit(train[feature_cols], train["HOME_PTS"])
+    away_model.fit(train[feature_cols], train["AWAY_PTS"])
+
+    meta_cols = STACKED_TOTAL_FEATURES
+    train_meta = build_total_meta_features(
+        train[feature_cols],
+        home_model.predict(train[feature_cols]),
+        away_model.predict(train[feature_cols]),
+        feature_cols=meta_cols,
+    )
+    test_meta = build_total_meta_features(
+        test[feature_cols],
+        home_model.predict(test[feature_cols]),
+        away_model.predict(test[feature_cols]),
+        feature_cols=meta_cols,
+    )
+
+    meta_model = meta_model_fn()
+    meta_model.fit(train_meta, train["TOTAL_PTS"])
+    pred = meta_model.predict(test_meta)
+    return mean_absolute_error(test["TOTAL_PTS"], pred)
+
+
+def _stacked_total_walk_forward_mae(model_df, home_model_fn, away_model_fn,
+                                    meta_model_fn, feature_cols,
+                                    train_window=800, step=50,
+                                    apply_filter=True):
+    df = model_df.copy()
+    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+    df = df.sort_values("GAME_DATE").reset_index(drop=True)
+
+    total_games = len(df)
+    n_batches = (total_games - train_window) // step
+    errors = []
+
+    for i in range(n_batches):
+        train_end = train_window + (i * step)
+        test_end = min(train_end + step, total_games)
+
+        train = df.iloc[:train_end].copy()
+        test = df.iloc[train_end:test_end].copy()
+        if len(test) == 0:
+            break
+
+        if apply_filter:
+            train = _apply_garbage_filter(train)
+
+        train = train.dropna(subset=feature_cols)
+        test = test.dropna(subset=feature_cols)
+        if len(train) < 50 or len(test) == 0:
+            continue
+
+        home_model = home_model_fn()
+        away_model = away_model_fn()
+        home_model.fit(train[feature_cols], train["HOME_PTS"])
+        away_model.fit(train[feature_cols], train["AWAY_PTS"])
+
+        meta_cols = STACKED_TOTAL_FEATURES
+        train_meta = build_total_meta_features(
+            train[feature_cols],
+            home_model.predict(train[feature_cols]),
+            away_model.predict(train[feature_cols]),
+            feature_cols=meta_cols,
+        )
+        test_meta = build_total_meta_features(
+            test[feature_cols],
+            home_model.predict(test[feature_cols]),
+            away_model.predict(test[feature_cols]),
+            feature_cols=meta_cols,
+        )
+
+        meta_model = meta_model_fn()
+        meta_model.fit(train_meta, train["TOTAL_PTS"])
+        pred = meta_model.predict(test_meta)
+        errors.extend(np.abs(pred - test["TOTAL_PTS"].values))
+
+    if len(errors) == 0:
+        return np.nan
+
+    return float(np.mean(errors))
+
+
 def run_optimization(
     model_df,
     use_walk_forward=True,
@@ -153,7 +258,6 @@ def run_optimization(
     targets = {
         "HOME_PTS": ("Home", MODEL_A_PATH),
         "AWAY_PTS": ("Away", MODEL_B_PATH),
-        "TOTAL_PTS": ("Total", MODEL_C_PATH),
     }
 
     if verbose:
@@ -192,7 +296,7 @@ def run_optimization(
         if verbose:
             print(
                 f"  {name:12s} | Home: {maes['HOME_PTS']:.2f} | "
-                f"Away: {maes['AWAY_PTS']:.2f} | Total: {maes['TOTAL_PTS']:.2f}"
+                f"Away: {maes['AWAY_PTS']:.2f}"
             )
 
     if verbose:
@@ -206,6 +310,35 @@ def run_optimization(
         if verbose:
             print(f"  {label:5s}: {best_name} (MAE={best_mae:.2f})")
         best_models[target] = (best_name, path)
+
+    best_home_name, _ = best_models["HOME_PTS"]
+    best_away_name, _ = best_models["AWAY_PTS"]
+
+    stacked_meta_fn = lambda: RandomForestRegressor(**RF_PARAMS)
+
+    if verbose:
+        print("\n  Evaluating stacked total model using best base configs...")
+
+    if use_walk_forward:
+        total_mae = _stacked_total_walk_forward_mae(
+            model_df,
+            configs[best_home_name],
+            configs[best_away_name],
+            stacked_meta_fn,
+            feature_cols,
+            train_window=train_window,
+            step=step,
+            apply_filter=apply_filter,
+        )
+    else:
+        total_mae = _stacked_total_time_split_mae(
+            model_df,
+            configs[best_home_name],
+            configs[best_away_name],
+            stacked_meta_fn,
+            feature_cols,
+            apply_filter=apply_filter,
+        )
 
     if verbose:
         print("\n[SAVING] Training best models on full data...")
@@ -225,11 +358,30 @@ def run_optimization(
             pickle.dump(model, f)
         saved[target] = best_name
 
+    home_model = configs[best_home_name]()
+    away_model = configs[best_away_name]()
+    home_model.fit(X_full, df["HOME_PTS"])
+    away_model.fit(X_full, df["AWAY_PTS"])
+
+    meta_cols = STACKED_TOTAL_FEATURES
+    meta_full = build_total_meta_features(
+        X_full,
+        home_model.predict(X_full),
+        away_model.predict(X_full),
+        feature_cols=meta_cols,
+    )
+    total_model = stacked_meta_fn()
+    total_model.fit(meta_full, df["TOTAL_PTS"])
+    with open(MODEL_C_PATH, "wb") as f:
+        pickle.dump(total_model, f)
+    saved["TOTAL_PTS"] = "STACKED"
+
     return {
         "results": results,
         "best_models": best_models,
         "saved": saved,
         "feature_cols": feature_cols,
+        "mae_total": total_mae,
     }
 
 

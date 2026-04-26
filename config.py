@@ -27,6 +27,9 @@ PREDICTION_LOG_PATH     = os.path.join(DATA_DIR, "prediction_log.csv")
 BACKTEST_RESULTS_PATH   = os.path.join(DATA_DIR, "backtest_results.csv")
 ELO_RATINGS_PATH        = os.path.join(DATA_DIR, "elo_ratings.csv")
 MARKET_LINES_PATH       = os.path.join(DATA_DIR, "market_lines.csv")
+ODDS_API_KEY            = os.getenv("ODDS_API_KEY", "39df67b86f1fff456af0953b3f1341a0")
+ODDS_API_BASE_URL       = os.getenv("ODDS_API_BASE_URL", "https://api.the-odds-api.com/v4")
+ODDS_SPORT_KEY          = os.getenv("ODDS_SPORT_KEY", "basketball_nba")
 
 # Model files
 MODEL_A_PATH = os.path.join(DATA_DIR, "model_A_home.pkl")
@@ -123,10 +126,28 @@ EWM_FEATURES = [
 # Strength of Schedule
 SOS_FEATURES = [
     "HOME_SOS_DEF", "AWAY_SOS_DEF", "SOS_DIFF",
+    "HOME_OFF_RTG", "AWAY_OFF_RTG",
+    "HOME_DEF_RTG", "AWAY_DEF_RTG",
+    "HOME_NET_RTG", "AWAY_NET_RTG",
+    "PACE_EST",
+    "HOME_ADJ_OFF_RTG", "AWAY_ADJ_OFF_RTG",
+    "HOME_ADJ_DEF_RTG", "AWAY_ADJ_DEF_RTG",
+    "HOME_ADJ_NET_RTG", "AWAY_ADJ_NET_RTG",
     "HOME_ADJ_OFF", "AWAY_ADJ_OFF",
     "HOME_ADJ_DEF", "AWAY_ADJ_DEF",
     "SOS_EXPECTED_HOME", "SOS_EXPECTED_AWAY", "SOS_EXPECTED_TOTAL",
 ]
+
+# Market lines
+MARKET_FEATURES = [
+    "MARKET_TOTAL_LINE", "MARKET_HOME_LINE",
+    "MARKET_TOTAL_MOVE", "MARKET_SPREAD_MOVE",
+    "MARKET_HOME_IMPLIED", "MARKET_AWAY_IMPLIED",
+    "MODEL_TOTAL_VS_MARKET", "MODEL_MARGIN_VS_MARKET",
+]
+
+# Live total calibration: weight applied to the sportsbook total when available.
+MARKET_TOTAL_BLEND_WEIGHT = 0.65
 
 # Player impact
 PLAYER_FEATURES = [
@@ -151,6 +172,15 @@ ELO_FEATURES = [
     "HOME_ELO", "AWAY_ELO", "ELO_DIFF", "ELO_EXPECTED",
 ]
 
+# Stacked total model features
+STACKED_TOTAL_FEATURES = [
+    "PRED_HOME", "PRED_AWAY", "PRED_SUM", "PRED_MARGIN",
+    "HOME_ROLL10_PTS", "AWAY_ROLL10_PTS",
+    "HOME_DEF_ROLL10", "AWAY_DEF_ROLL10",
+    "HOME_ELO", "AWAY_ELO", "ELO_DIFF",
+    "COMBINED_PTS_ROLL10",
+]
+
 # ?? Combined final feature list ??????????????????????????????
 FEATURE_COLS_FINAL = (
     ROLLING_HOME_FEATURES
@@ -163,6 +193,7 @@ FEATURE_COLS_FINAL = (
     + SHOT_FEATURES
     + EWM_FEATURES
     + SOS_FEATURES
+    + MARKET_FEATURES
     + PLAYER_FEATURES
     + MARGIN_FEATURES
     + ELO_FEATURES

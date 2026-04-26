@@ -11,10 +11,12 @@ import pandas as pd
 from config import (
     SEASONS, DATA_DIR, GAMELOGS_ALL_PATH, GAMES_ALL_PATH,
     SHOT_PROFILES_PATH, PLAYER_IMPACT_PATH, MODEL_READY_PATH,
+    MARKET_LINES_PATH,
 )
 from ingestion.gamelogs import pull_multi_season, build_game_level_dataset
 from ingestion.shots import pull_all_shot_profiles
 from ingestion.players import build_player_impact
+from ingestion.odds import pull_closing_market_lines
 from features.pipeline import build_full_features
 from models.train import train_models, save_models
 from optimize import run_optimization
@@ -23,7 +25,8 @@ from optimize import run_optimization
 def full_rebuild(seasons=None, skip_api=False,
                  run_model_optimization=True,
                  optimize_walk_forward=True,
-                 train_window=800, step=50):
+                 train_window=800, step=50,
+                 include_market_lines=True):
     """
     Full pipeline rebuild from API to saved models.
 
@@ -75,17 +78,39 @@ def full_rebuild(seasons=None, skip_api=False,
         player_impact_df = build_player_impact(gamelogs, seasons)
         player_impact_df.to_csv(PLAYER_IMPACT_PATH, index=False)
 
-    # Step 5: Feature engineering
-    print("\n[STEP 5] Feature engineering...")
+    # Step 5: Market lines
+    market_df = None
+    if include_market_lines:
+        if skip_api and os.path.exists(MARKET_LINES_PATH):
+            print("\n[LOAD] Loading market lines from disk...")
+            market_df = pd.read_csv(MARKET_LINES_PATH)
+        else:
+            print("\n[STEP 5] Pulling market lines from Odds API...")
+            try:
+                market_df = pull_closing_market_lines(
+                    date_from=games["GAME_DATE"].min(),
+                    date_to=games["GAME_DATE"].max(),
+                )
+                if len(market_df) > 0:
+                    market_df.to_csv(MARKET_LINES_PATH, index=False)
+                else:
+                    print("  [WARN] No market lines returned; continuing without market features")
+            except Exception as e:
+                print(f"  [WARN] Market pull failed: {e}")
+                market_df = None
+
+    # Step 6: Feature engineering
+    print("\n[STEP 6] Feature engineering...")
     model_df = build_full_features(
         games, shot_df=shot_df,
         player_impact_df=player_impact_df,
+        market_df=market_df,
         extend_player_season=seasons[-1],
     )
     model_df.to_csv(MODEL_READY_PATH, index=False)
 
-    # Step 6: Train/optimize models
-    print("\n[STEP 6] Training models...")
+    # Step 7: Train/optimize models
+    print("\n[STEP 7] Training models...")
     train_seasons = seasons[:-1] if len(seasons) > 1 else seasons
     test_season = seasons[-1]
 

@@ -7,12 +7,59 @@ Uses V8 models with 100 features (including ELO ratings).
 """
 import pandas as pd
 import numpy as np
+
+from config import MARKET_TOTAL_BLEND_WEIGHT
+from prediction.feature_builder import build_game_features
+from models.stacking import build_total_meta_features
 from utils.helpers import win_probability, confidence_tier, style_label
+
+
+def _blend_total_with_market(model_total, market_total_line=None, weight=MARKET_TOTAL_BLEND_WEIGHT):
+    """Blend the raw model total with the sportsbook total when one is provided."""
+    if market_total_line is None or pd.isna(market_total_line):
+        return model_total
+
+    market_weight = float(weight)
+    model_weight = 1.0 - market_weight
+    return (model_weight * model_total) + (market_weight * float(market_total_line))
+
+
+def _infer_latest_season(*frames):
+    """Find the most recent season label present in the supplied frames."""
+    for frame in frames:
+        if frame is None or "SEASON" not in getattr(frame, "columns", []):
+            continue
+        seasons = frame["SEASON"].dropna()
+        if len(seasons) > 0:
+            return seasons.astype(str).max()
+    return None
+
+
+def _find_player_impact_matches(player_impact_df, player_name, team_abbr=None, latest_season=None):
+    """Return likely player-impact matches for a typed injury name."""
+    if player_impact_df is None or len(player_impact_df) == 0:
+        return pd.DataFrame()
+
+    frame = player_impact_df.copy()
+    if latest_season is not None and "SEASON" in frame.columns:
+        frame = frame[frame["SEASON"].astype(str) == str(latest_season)]
+
+    if "PLAYER_NAME" not in frame.columns:
+        return pd.DataFrame()
+
+    name_mask = frame["PLAYER_NAME"].astype(str).str.contains(player_name, case=False, na=False)
+    matches = frame[name_mask].copy()
+
+    if team_abbr is not None and "TEAM_ABBR" in matches.columns:
+        return matches[matches["TEAM_ABBR"] == team_abbr].copy()
+
+    return matches
 
 
 def predict_game(home_team, away_team, model_df, models, shot_df=None,
                  player_impact_df=None, feature_cols=None,
-                 home_out=None, away_out=None, verbose=True):
+                 home_out=None, away_out=None, raw_gamelogs=None,
+                 game_date=None, market_total_line=None, verbose=True):
     """
     Predict the score of any NBA matchup.
 
@@ -23,9 +70,12 @@ def predict_game(home_team, away_team, model_df, models, shot_df=None,
         models: dict with model_A, model_B, model_C
         shot_df: shot profile data (for style display)
         player_impact_df: player impact data (for injury adjustment)
-        feature_cols: list of feature column names
+        feature_cols: list of feature column names (base feature fallback)
         home_out: list of injured home players e.g. ['Tatum']
         away_out: list of injured away players e.g. ['LeBron']
+        raw_gamelogs: optional raw team-level gamelogs for fresh snapshots
+        game_date: optional matchup date for the feature builder
+        market_total_line: optional sportsbook total to calibrate the final total
         verbose: print full report
 
     Returns:
@@ -34,106 +84,100 @@ def predict_game(home_team, away_team, model_df, models, shot_df=None,
     home_out = home_out or []
     away_out = away_out or []
 
-    if feature_cols is None:
-        feature_cols = list(models["model_C"].feature_names_in_)
+    base_feature_cols = list(getattr(models["model_A"], "feature_names_in_", []))
+    if not base_feature_cols:
+        base_feature_cols = feature_cols or []
 
-    # Get most recent season
-    latest_season = model_df["SEASON"].max()
+    meta_feature_cols = list(getattr(models["model_C"], "feature_names_in_", []))
+    if not meta_feature_cols:
+        meta_feature_cols = feature_cols or []
 
-    # Get most recent form for each team
-    home_games = model_df[
-        (model_df["HOME_TEAM"] == home_team) &
-        (model_df["SEASON"] == latest_season)
-    ].sort_values("GAME_DATE")
+    latest_season = _infer_latest_season(model_df, shot_df, player_impact_df)
 
-    away_games = model_df[
-        (model_df["AWAY_TEAM"] == away_team) &
-        (model_df["SEASON"] == latest_season)
-    ].sort_values("GAME_DATE")
+    feature_frame = build_game_features(
+        home_team,
+        away_team,
+        model_df=model_df,
+        raw_gamelogs=raw_gamelogs,
+        game_date=game_date,
+        feature_cols=base_feature_cols,
+    )
 
-    # Fallback: check opposite appearances
-    if len(home_games) == 0:
-        home_games = model_df[
-            (model_df["AWAY_TEAM"] == home_team) &
-            (model_df["SEASON"] == latest_season)
-        ].sort_values("GAME_DATE")
-
-    if len(away_games) == 0:
-        away_games = model_df[
-            (model_df["HOME_TEAM"] == away_team) &
-            (model_df["SEASON"] == latest_season)
-        ].sort_values("GAME_DATE")
-
-    if len(home_games) == 0 or len(away_games) == 0:
+    if feature_frame is None or len(feature_frame) == 0:
         print(f"[FAIL] No data for {home_team} or {away_team}")
         print(f"   Valid: {sorted(model_df['HOME_TEAM'].unique())}")
         return None
 
-    home_row = home_games.iloc[-1]
-    away_row = away_games.iloc[-1]
-
-    # Build feature vector
-    feature_dict = {}
-    for col in feature_cols:
-        if col.startswith("AWAY_") and col in away_row.index:
-            feature_dict[col] = away_row[col]
-        elif col in home_row.index:
-            feature_dict[col] = home_row[col]
-        else:
-            feature_dict[col] = 0
-
-    X_pred = pd.DataFrame([feature_dict])[feature_cols]
+    feature_row = feature_frame.iloc[0]
+    X_pred = feature_frame[base_feature_cols]
 
     # Base predictions
     pred_home = models["model_A"].predict(X_pred)[0]
     pred_away = models["model_B"].predict(X_pred)[0]
-    pred_total = models["model_C"].predict(X_pred)[0]
+
+    meta_X = build_total_meta_features(
+        feature_frame,
+        [pred_home],
+        [pred_away],
+        feature_cols=meta_feature_cols,
+    )
+    raw_pred_total = models["model_C"].predict(meta_X)[0]
+    pred_total = _blend_total_with_market(raw_pred_total, market_total_line)
 
     # Injury adjustments
     injury_log = []
-    if player_impact_df is not None and (home_out or away_out):
+    if player_impact_df is not None and (home_out or away_out) and latest_season is not None:
         s_latest = player_impact_df[
             (player_impact_df["SEASON"] == latest_season) &
             (player_impact_df["GAMES_PLAYED"] >= 15)
         ].copy()
 
         for player_name in home_out:
-            matches = s_latest[
-                (s_latest["TEAM_ABBR"] == home_team) &
-                (s_latest["PLAYER_NAME"].str.contains(
-                    player_name, case=False, na=False))
-            ]
+            matches = _find_player_impact_matches(s_latest, player_name, home_team, latest_season)
             if len(matches) > 0:
                 impact = matches.iloc[0]["PTS_IMPACT"]
                 pred_home -= impact
-                pred_total -= impact
                 injury_log.append(
                     f"  {home_team} OUT: "
                     f"{matches.iloc[0]['PLAYER_NAME']} -> "
                     f"-{impact:.1f} pts")
             else:
-                injury_log.append(
-                    f"  [WARN]  {player_name} not found in "
-                    f"{home_team} roster")
+                any_matches = _find_player_impact_matches(player_impact_df, player_name, latest_season=latest_season)
+                if len(any_matches) > 0 and "TEAM_ABBR" in any_matches.columns:
+                    teams = ", ".join(sorted(any_matches["TEAM_ABBR"].astype(str).unique().tolist()))
+                    injury_log.append(
+                        f"  [WARN]  {player_name} not on {home_team}; found on: {teams}")
+                else:
+                    injury_log.append(
+                        f"  [WARN]  {player_name} not found in player-impact data")
 
         for player_name in away_out:
-            matches = s_latest[
-                (s_latest["TEAM_ABBR"] == away_team) &
-                (s_latest["PLAYER_NAME"].str.contains(
-                    player_name, case=False, na=False))
-            ]
+            matches = _find_player_impact_matches(s_latest, player_name, away_team, latest_season)
             if len(matches) > 0:
                 impact = matches.iloc[0]["PTS_IMPACT"]
                 pred_away -= impact
-                pred_total -= impact
                 injury_log.append(
                     f"  {away_team} OUT: "
                     f"{matches.iloc[0]['PLAYER_NAME']} -> "
                     f"-{impact:.1f} pts")
             else:
-                injury_log.append(
-                    f"  [WARN]  {player_name} not found in "
-                    f"{away_team} roster")
+                any_matches = _find_player_impact_matches(player_impact_df, player_name, latest_season=latest_season)
+                if len(any_matches) > 0 and "TEAM_ABBR" in any_matches.columns:
+                    teams = ", ".join(sorted(any_matches["TEAM_ABBR"].astype(str).unique().tolist()))
+                    injury_log.append(
+                        f"  [WARN]  {player_name} not on {away_team}; found on: {teams}")
+                else:
+                    injury_log.append(
+                        f"  [WARN]  {player_name} not found in player-impact data")
+
+        meta_X = build_total_meta_features(
+            feature_frame,
+            [pred_home],
+            [pred_away],
+            feature_cols=meta_feature_cols,
+        )
+        raw_pred_total = models["model_C"].predict(meta_X)[0]
+        pred_total = _blend_total_with_market(raw_pred_total, market_total_line)
 
     # Win probability and confidence
     margin = pred_home - pred_away
@@ -143,7 +187,7 @@ def predict_game(home_team, away_team, model_df, models, shot_df=None,
     # Shot style info
     h_style = a_style = "N/A"
     h_3pt = h_paint = h_pps = a_3pt = a_paint = a_pps = 0
-    if shot_df is not None:
+    if shot_df is not None and latest_season is not None:
         for team, prefix in [(home_team, "h"), (away_team, "a")]:
             row = shot_df[
                 (shot_df["TEAM_ABBR"] == team) &
@@ -159,15 +203,17 @@ def predict_game(home_team, away_team, model_df, models, shot_df=None,
                     a_3pt, a_paint, a_pps, a_style = t, p, pps, lbl
 
     # Momentum
-    hm = home_row.get("HOME_MOMENTUM", 0)
-    am = away_row.get("AWAY_MOMENTUM", 0)
+    hm = feature_row.get("HOME_MOMENTUM", 0)
+    am = feature_row.get("AWAY_MOMENTUM", 0)
 
     result = {
         "home_team": home_team,
         "away_team": away_team,
         "pred_home": round(pred_home, 1),
         "pred_away": round(pred_away, 1),
+        "pred_total_raw": round(raw_pred_total, 1),
         "pred_total": round(pred_total, 1),
+        "market_total_line": None if market_total_line is None else round(float(market_total_line), 1),
         "home_range": (round(pred_home - 3.5), round(pred_home + 3.5)),
         "away_range": (round(pred_away - 3.5), round(pred_away + 3.5)),
         "total_range": (round(pred_total - 4.5), round(pred_total + 4.5)),
@@ -186,10 +232,10 @@ def predict_game(home_team, away_team, model_df, models, shot_df=None,
             inj_section = ("\n  INJURY ADJUSTMENTS\n"
                            + "\n".join(injury_log))
 
-        h_scored = home_row.get("HOME_ROLL10_PTS", 0)
-        h_allowed = home_row.get("HOME_DEF_ROLL10", 0)
-        a_scored = away_row.get("AWAY_ROLL10_PTS", 0)
-        a_allowed = away_row.get("AWAY_DEF_ROLL10", 0)
+        h_scored = feature_row.get("HOME_ROLL10_PTS", 0)
+        h_allowed = feature_row.get("HOME_DEF_ROLL10", 0)
+        a_scored = feature_row.get("AWAY_ROLL10_PTS", 0)
+        a_allowed = feature_row.get("AWAY_DEF_ROLL10", 0)
 
         print(f"""
 ????????????????????????????????????????????????????????
@@ -199,7 +245,8 @@ def predict_game(home_team, away_team, model_df, models, shot_df=None,
   PREDICTED FINAL SCORE
   {home_team}: {pred_home:.0f} pts   range: {result['home_range'][0]}-{result['home_range'][1]}
   {away_team}: {pred_away:.0f} pts   range: {result['away_range'][0]}-{result['away_range'][1]}
-  Total  : {pred_total:.0f} pts   range: {result['total_range'][0]}-{result['total_range'][1]}
+    Total  : {pred_total:.0f} pts   range: {result['total_range'][0]}-{result['total_range'][1]}
+    Raw total model: {raw_pred_total:.1f}{f' | Market total: {float(market_total_line):.1f}' if market_total_line is not None and not pd.isna(market_total_line) else ''}
 
   WIN PROBABILITY
   {home_team}: {wp*100:.1f}%   {away_team}: {100-wp*100:.1f}%

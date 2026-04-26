@@ -35,6 +35,31 @@ def add_sos_features(games):
         "TEAM": "AWAY_TEAM", "OPP_DEF_ROLL10": "AWAY_SOS_DEF"
     }), on=["GAME_ID", "AWAY_TEAM"], how="left")
 
+    # Pace-adjusted offensive/defensive ratings (points per 100 possessions)
+    df["HOME_OFF_RTG"] = 100 * df["HOME_ROLL10_PTS"] / df["HOME_ROLL10_POSS_EST"].clip(lower=70)
+    df["AWAY_OFF_RTG"] = 100 * df["AWAY_ROLL10_PTS"] / df["AWAY_ROLL10_POSS_EST"].clip(lower=70)
+    df["HOME_DEF_RTG"] = 100 * df["HOME_DEF_ROLL10"] / df["HOME_ROLL10_POSS_EST"].clip(lower=70)
+    df["AWAY_DEF_RTG"] = 100 * df["AWAY_DEF_ROLL10"] / df["AWAY_ROLL10_POSS_EST"].clip(lower=70)
+    df["HOME_NET_RTG"] = df["HOME_OFF_RTG"] - df["HOME_DEF_RTG"]
+    df["AWAY_NET_RTG"] = df["AWAY_OFF_RTG"] - df["AWAY_DEF_RTG"]
+    df["PACE_EST"] = (df["HOME_ROLL10_POSS_EST"] + df["AWAY_ROLL10_POSS_EST"]) / 2
+
+    league_avg_off_rtg = pd.concat([
+        df["HOME_OFF_RTG"],
+        df["AWAY_OFF_RTG"],
+    ], ignore_index=True).mean()
+
+    # Opponent-quality normalization (proxy using opponent defensive rolling).
+    opp_quality_home = (100 * df["HOME_SOS_DEF"] / df["HOME_ROLL10_POSS_EST"].clip(lower=70)).clip(lower=95)
+    opp_quality_away = (100 * df["AWAY_SOS_DEF"] / df["AWAY_ROLL10_POSS_EST"].clip(lower=70)).clip(lower=95)
+
+    df["HOME_ADJ_OFF_RTG"] = df["HOME_OFF_RTG"] * (league_avg_off_rtg / opp_quality_home)
+    df["AWAY_ADJ_OFF_RTG"] = df["AWAY_OFF_RTG"] * (league_avg_off_rtg / opp_quality_away)
+    df["HOME_ADJ_DEF_RTG"] = df["HOME_DEF_RTG"] * (league_avg_off_rtg / opp_quality_home)
+    df["AWAY_ADJ_DEF_RTG"] = df["AWAY_DEF_RTG"] * (league_avg_off_rtg / opp_quality_away)
+    df["HOME_ADJ_NET_RTG"] = df["HOME_ADJ_OFF_RTG"] - df["HOME_ADJ_DEF_RTG"]
+    df["AWAY_ADJ_NET_RTG"] = df["AWAY_ADJ_OFF_RTG"] - df["AWAY_ADJ_DEF_RTG"]
+
     df["HOME_ADJ_OFF"] = df["HOME_ROLL10_PTS"] * (
         df["LEAGUE_AVG_PTS"] / df["HOME_SOS_DEF"].clip(lower=90))
     df["AWAY_ADJ_OFF"] = df["AWAY_ROLL10_PTS"] * (

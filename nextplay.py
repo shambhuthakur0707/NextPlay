@@ -3422,6 +3422,7 @@ print("✅ Fixes ready — will integrate into dashboard")
 # ============================================================
 
 from nba_api.stats.endpoints import leaguegamefinder
+from nba_api.stats.endpoints import leaguegamefinder, scoreboardv3
 from datetime import datetime, timedelta
 
 def get_last_night_games():
@@ -3485,29 +3486,30 @@ def get_tonight_schedule():
     today = datetime.today().strftime('%Y-%m-%d')
 
     try:
-        finder = leaguegamefinder.LeagueGameFinder(
-            date_from_nullable=today,
-            date_to_nullable=today,
-            league_id_nullable='00',
-            season_type_nullable='Regular Season'
-        ).get_data_frames()[0]
-
-        if len(finder) == 0:
+        sb = scoreboardv3.ScoreboardV3(game_date=today, league_id='00')
+        frames = sb.get_data_frames()
+        if len(frames) < 3:
             return []
 
-        home_games = finder[
-            finder['MATCHUP'].str.contains('vs.')
-        ][['TEAM_ABBREVIATION','MATCHUP']].copy()
+        game_header = frames[1].copy()
+        team_lines = frames[2][['gameId', 'teamId', 'teamTricode']].copy()
 
-        away_games = finder[
-            finder['MATCHUP'].str.contains('@')
-        ][['TEAM_ABBREVIATION']].copy()
+        game_header['gameTimeUTC'] = pd.to_datetime(game_header['gameTimeUTC'], utc=True)
+        now_utc = pd.Timestamp.now(tz=timezone.utc)
+        upcoming = game_header[game_header['gameTimeUTC'] > now_utc]
+
+        if len(upcoming) == 0:
+            return []
 
         schedule = []
-        for _, row in home_games.iterrows():
-            home = row['TEAM_ABBREVIATION']
-            # Extract away team from matchup string
-            away = row['MATCHUP'].split('vs. ')[1].strip()
+        for _, row in upcoming.iterrows():
+            gid = row['gameId']
+            game_teams = team_lines[team_lines['gameId'] == gid].reset_index(drop=True)
+            if len(game_teams) < 2:
+                continue
+
+            home = game_teams.iloc[0]['teamTricode']
+            away = game_teams.iloc[1]['teamTricode']
             schedule.append((home, away))
 
         return schedule

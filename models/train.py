@@ -13,9 +13,11 @@ from sklearn.metrics import mean_absolute_error
 
 from config import (
     RF_PARAMS, FEATURE_COLS_FINAL,
+    STACKED_TOTAL_FEATURES,
     BLOWOUT_MARGIN_THRESHOLD, OT_TOTAL_THRESHOLD, OT_MARGIN_THRESHOLD,
     MODEL_A_PATH, MODEL_B_PATH, MODEL_C_PATH,
 )
+from models.stacking import build_total_meta_features
 
 
 def filter_training_data(train_df):
@@ -56,6 +58,7 @@ def train_models(model_df, train_seasons=None, test_season=None,
         dict with models, MAE scores, and feature columns used
     """
     feature_cols = [c for c in FEATURE_COLS_FINAL if c in model_df.columns]
+    meta_feature_cols = STACKED_TOTAL_FEATURES
 
     if train_seasons and test_season:
         train = model_df[model_df["SEASON"].isin(train_seasons)].copy()
@@ -91,10 +94,22 @@ def train_models(model_df, train_seasons=None, test_season=None,
     rf_B.fit(X_train, train["AWAY_PTS"])
     mae_away = mean_absolute_error(test["AWAY_PTS"], rf_B.predict(X_test))
 
-    # Model C: Total points
+    # Model C: stacked total points
+    train_meta = build_total_meta_features(
+        train[feature_cols],
+        rf_A.predict(X_train),
+        rf_B.predict(X_train),
+        feature_cols=meta_feature_cols,
+    )
+    test_meta = build_total_meta_features(
+        test[feature_cols],
+        rf_A.predict(X_test),
+        rf_B.predict(X_test),
+        feature_cols=meta_feature_cols,
+    )
     rf_C = RandomForestRegressor(**RF_PARAMS)
-    rf_C.fit(X_train, train["TOTAL_PTS"])
-    mae_total = mean_absolute_error(test["TOTAL_PTS"], rf_C.predict(X_test))
+    rf_C.fit(train_meta, train["TOTAL_PTS"])
+    mae_total = mean_absolute_error(test["TOTAL_PTS"], rf_C.predict(test_meta))
 
     print(f"\n  {'=' * 45}")
     print(f"  RESULTS")
@@ -111,6 +126,7 @@ def train_models(model_df, train_seasons=None, test_season=None,
         "mae_away": mae_away,
         "mae_total": mae_total,
         "feature_cols": feature_cols,
+        "meta_feature_cols": meta_feature_cols,
     }
 
 

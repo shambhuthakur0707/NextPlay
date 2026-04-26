@@ -11,6 +11,7 @@ from features.context import add_context_features
 from features.defensive import add_defensive_features
 from features.ewm import add_ewm_features
 from features.sos import add_sos_features
+from features.market import merge_market_features
 from features.matchup import add_matchup_features
 from features.shots import merge_shot_profiles
 from features.players import add_player_features
@@ -19,7 +20,8 @@ from config import FEATURE_COLS_FINAL, META_COLS, ELO_RATINGS_PATH
 
 
 def build_full_features(games, shot_df=None, player_impact_df=None,
-                        extend_player_season=None, elo_path=None):
+                        market_df=None, extend_player_season=None,
+                        elo_path=None):
     """
     Run the complete feature engineering pipeline.
 
@@ -68,25 +70,32 @@ def build_full_features(games, shot_df=None, player_impact_df=None,
     print("  7/10 Strength of Schedule features...")
     df = add_sos_features(df)
 
-    # Step 8: Shot profiles (if provided)
+    # Step 8: Market lines (if provided)
+    if market_df is not None:
+        print("  8/11 Market line features...")
+        df = merge_market_features(df, market_df)
+    else:
+        print("  8/11 Market lines -- SKIPPED (no data)")
+
+    # Step 9: Shot profiles (if provided)
     if shot_df is not None:
-        print("  8/10 Shot profile features...")
+        print("  9/11 Shot profile features...")
         df = merge_shot_profiles(df, shot_df)
     else:
-        print("  8/10 Shot profiles -- SKIPPED (no data)")
+        print("  9/11 Shot profiles -- SKIPPED (no data)")
 
-    # Step 9: Player features (if provided)
+    # Step 10: Player features (if provided)
     if player_impact_df is not None:
-        print("  9/10 Player impact features...")
+        print("  10/11 Player impact features...")
         df = add_player_features(
             df, player_impact_df,
             extend_season=extend_player_season
         )
     else:
-        print("  9/10 Player features -- SKIPPED (no data)")
+        print("  10/11 Player features -- SKIPPED (no data)")
 
-    # Step 10: ELO ratings
-    print("  10/10 ELO rating features...")
+    # Step 11: ELO ratings
+    print("  11/11 ELO rating features...")
     df = add_elo_features(df, elo_path=elo_path)
 
     # Add margin rolling (V7 feature)

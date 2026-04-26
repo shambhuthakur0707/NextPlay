@@ -24,6 +24,12 @@ def add_defensive_features(games, window=ROLLING_WINDOW):
     """
     df = games.copy().sort_values("GAME_DATE").reset_index(drop=True)
 
+    # If these columns already exist (e.g., from unified rolling snapshots),
+    # drop them before merging fresh defensive rollups to avoid _x/_y suffixes.
+    for col in ["HOME_DEF_ROLL10", "AWAY_DEF_ROLL10", "COMBINED_DEF_ROLL10", "EXPECTED_TOTAL"]:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+
     # Build opponent-scored lookup
     home_def = df[["GAME_DATE", "GAME_ID", "HOME_TEAM", "AWAY_PTS"]].copy()
     home_def.columns = ["GAME_DATE", "GAME_ID", "TEAM", "OPP_PTS"]

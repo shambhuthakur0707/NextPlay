@@ -5,3 +5,4 @@ scikit-learn>=1.2.0
 lightgbm>=3.3.0
 nba_api>=1.2.1
 plotly>=5.14.0
+requests>=2.31.0

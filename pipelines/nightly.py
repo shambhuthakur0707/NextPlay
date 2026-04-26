@@ -8,9 +8,10 @@ Run every morning to:
 3. Predict tonight's games
 """
 import pandas as pd
-from datetime import datetime, timedelta
-from nba_api.stats.endpoints import leaguegamefinder
+from datetime import datetime, timedelta, timezone
+from nba_api.stats.endpoints import leaguegamefinder, scoreboardv3
 
+from ingestion.odds import pull_closing_market_lines
 from prediction.predict import predict_game
 
 
@@ -63,24 +64,31 @@ def get_tonight_schedule():
     today = datetime.today().strftime("%Y-%m-%d")
 
     try:
-        finder = leaguegamefinder.LeagueGameFinder(
-            date_from_nullable=today,
-            date_to_nullable=today,
-            league_id_nullable="00",
-            season_type_nullable="Regular Season",
-        ).get_data_frames()[0]
-
-        if len(finder) == 0:
+        sb = scoreboardv3.ScoreboardV3(game_date=today, league_id="00")
+        frames = sb.get_data_frames()
+        if len(frames) < 3:
             return []
 
-        home_games = finder[
-            finder["MATCHUP"].str.contains("vs.")
-        ][["TEAM_ABBREVIATION", "MATCHUP"]].copy()
+        game_header = frames[1].copy()
+        team_lines = frames[2][["gameId", "teamId", "teamTricode"]].copy()
+
+        upcoming = game_header.copy()
+        upcoming["gameTimeUTC"] = pd.to_datetime(upcoming["gameTimeUTC"], utc=True)
+        now_utc = pd.Timestamp.now(tz=timezone.utc)
+        upcoming = upcoming[upcoming["gameTimeUTC"] > now_utc]
+
+        if len(upcoming) == 0:
+            return []
 
         schedule = []
-        for _, row in home_games.iterrows():
-            home = row["TEAM_ABBREVIATION"]
-            away = row["MATCHUP"].split("vs. ")[1].strip()
+        for _, row in upcoming.iterrows():
+            gid = row["gameId"]
+            game_teams = team_lines[team_lines["gameId"] == gid].reset_index(drop=True)
+            if len(game_teams) < 2:
+                continue
+
+            home = game_teams.iloc[0]["teamTricode"]
+            away = game_teams.iloc[1]["teamTricode"]
             schedule.append((home, away))
 
         return schedule
@@ -127,11 +135,27 @@ def nightly_update(model_df, models, shot_df=None,
     print(f"\n[PRED] STEP 2 -- Tonight's predictions")
     schedule = get_tonight_schedule()
 
+    market_lines = None
+    try:
+        today = datetime.today().strftime("%Y-%m-%d")
+        market_lines = pull_closing_market_lines(date_from=today, date_to=today)
+    except Exception as exc:
+        print(f"  [WARN] Could not load market lines: {exc}")
+
     if len(schedule) == 0:
         print("  No games scheduled tonight")
     else:
         print(f"  {len(schedule)} games tonight\n")
         for home, away in schedule:
+            market_total_line = None
+            if market_lines is not None and len(market_lines) > 0:
+                match = market_lines[
+                    (market_lines["HOME_TEAM"] == home) &
+                    (market_lines["AWAY_TEAM"] == away)
+                ]
+                if len(match) > 0:
+                    market_total_line = match.iloc[0].get("CLOSE_TOTAL")
+
             h_out = home_injuries.get(home, [])
             a_out = away_injuries.get(away, [])
 
@@ -141,6 +165,7 @@ def nightly_update(model_df, models, shot_df=None,
                 player_impact_df=player_impact_df,
                 feature_cols=feature_cols,
                 home_out=h_out, away_out=a_out,
+                market_total_line=market_total_line,
                 verbose=True,
             )
 

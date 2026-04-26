@@ -6,17 +6,21 @@ Streamlit dashboard for the V7 NBA prediction system.
 Run with: streamlit run app.py
 """
 import os
+from datetime import datetime, timezone
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from nba_api.stats.endpoints import scoreboardv3
 
 from config import (
     DATA_DIR, MODEL_READY_PATH, SHOT_PROFILES_PATH,
     PLAYER_IMPACT_PATH, BACKTEST_RESULTS_PATH, ELO_RATINGS_PATH,
     NBA_TEAMS, FEATURE_COLS_FINAL,
 )
+from ingestion.odds import pull_closing_market_lines
 from models.train import load_models
 from prediction.predict import predict_game
 
@@ -82,6 +86,78 @@ def load_cached_models():
         return None
 
 
+def _suggest_player_names(player_impact_df, team_abbr, raw_text, latest_season=None, limit=5):
+    """Return likely player names for a team's injury text input."""
+    if player_impact_df is None or not raw_text:
+        return []
+
+    frame = player_impact_df.copy()
+    if latest_season is not None and "SEASON" in frame.columns:
+        frame = frame[frame["SEASON"].astype(str) == str(latest_season)]
+
+    if "TEAM_ABBR" in frame.columns:
+        frame = frame[frame["TEAM_ABBR"] == team_abbr]
+
+    if len(frame) == 0 or "PLAYER_NAME" not in frame.columns:
+        return []
+
+    parts = [part.strip() for part in raw_text.split(",") if part.strip()]
+    if not parts:
+        return []
+
+    suggestions = []
+    for part in parts:
+        matches = frame[frame["PLAYER_NAME"].astype(str).str.contains(part, case=False, na=False)]
+        suggestions.extend(matches["PLAYER_NAME"].astype(str).head(limit).tolist())
+
+    seen = set()
+    ordered = []
+    for name in suggestions:
+        if name not in seen:
+            ordered.append(name)
+            seen.add(name)
+    return ordered[:limit]
+
+
+@st.cache_data(ttl=600)
+def get_games_for_date(game_date):
+    """Return scheduled NBA games for a given date."""
+    game_date = pd.Timestamp(game_date).strftime("%Y-%m-%d")
+
+    try:
+        sb = scoreboardv3.ScoreboardV3(game_date=game_date, league_id="00")
+        frames = sb.get_data_frames()
+        if len(frames) < 3:
+            return []
+
+        game_header = frames[1].copy()
+        team_lines = frames[2][["gameId", "teamId", "teamTricode"]].copy()
+        game_header["gameTimeUTC"] = pd.to_datetime(game_header["gameTimeUTC"], utc=True)
+
+        selected_games = game_header.copy()
+        if game_date == datetime.today().strftime("%Y-%m-%d"):
+            now_utc = pd.Timestamp.now(tz=timezone.utc)
+            selected_games = selected_games[selected_games["gameTimeUTC"] > now_utc]
+
+        schedule = []
+        for _, row in selected_games.iterrows():
+            game_teams = team_lines[team_lines["gameId"] == row["gameId"]].reset_index(drop=True)
+            if len(game_teams) < 2:
+                continue
+
+            schedule.append({
+                "game_id": row["gameId"],
+                "start_time": row.get("gameEt") or row.get("gameTimeUTC"),
+                "home_team": game_teams.iloc[0]["teamTricode"],
+                "away_team": game_teams.iloc[1]["teamTricode"],
+            })
+
+        return schedule
+    except Exception as exc:
+        st.warning(f"Could not load games for {game_date}: {exc}")
+        return []
+
+
 data = load_data()
 models = load_cached_models()
 
@@ -95,7 +171,7 @@ st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
     "Navigate",
-    ["🏀 Game Predictor", "📊 Model Dashboard",
+    ["📅 Today’s Games", "🏀 Game Predictor", "📊 Model Dashboard",
      "🏆 Team Rankings", "ℹ️ About"],
 )
 
@@ -108,10 +184,78 @@ if data["model_df"] is not None:
     )
 
 # ════════════════════════════════════════════════════════════
-# PAGE 1 — GAME PREDICTOR
+# PAGE 1 — TODAY'S GAMES
 # ════════════════════════════════════════════════════════════
 
-if page == "🏀 Game Predictor":
+if page == "📅 Today’s Games":
+    st.title("📅 Today's NBA Games")
+    st.markdown("Browse the slate for any date and see the matchup list for that day.")
+
+    selected_date = st.date_input(
+        "Select game date",
+        value=datetime.today().date(),
+        help="Defaults to today's slate.",
+    )
+
+    games = get_games_for_date(selected_date)
+    st.caption(f"{len(games)} game(s) found for {pd.Timestamp(selected_date).strftime('%Y-%m-%d')}")
+
+    if len(games) == 0:
+        st.info("No games found for this date.")
+    else:
+        market_lines = None
+        try:
+            market_lines = pull_closing_market_lines(date_from=selected_date, date_to=selected_date)
+        except Exception:
+            market_lines = None
+
+        for idx, game in enumerate(games, start=1):
+            home_team = game["home_team"]
+            away_team = game["away_team"]
+            market_total_line = None
+            if market_lines is not None and len(market_lines) > 0:
+                match = market_lines[
+                    (market_lines["HOME_TEAM"] == home_team) &
+                    (market_lines["AWAY_TEAM"] == away_team)
+                ]
+                if len(match) > 0:
+                    market_total_line = match.iloc[0].get("CLOSE_TOTAL")
+
+            with st.container():
+                left, right = st.columns([3, 1])
+                with left:
+                    st.subheader(f"{idx}. {away_team} at {home_team}")
+                    st.write(f"Start time: {game['start_time']}")
+                    if market_total_line is not None and pd.notna(market_total_line):
+                        st.write(f"Sportsbook total: {float(market_total_line):.1f}")
+                with right:
+                    if models is not None and data["model_df"] is not None:
+                        try:
+                            feature_cols = list(models["model_C"].feature_names_in_)
+                        except Exception:
+                            feature_cols = [c for c in FEATURE_COLS_FINAL if c in data["model_df"].columns]
+
+                        result = predict_game(
+                            home_team, away_team,
+                            data["model_df"], models,
+                            shot_df=data.get("shot_df"),
+                            player_impact_df=data.get("player_impact_df"),
+                            feature_cols=feature_cols,
+                            game_date=pd.Timestamp(selected_date),
+                            market_total_line=market_total_line,
+                            verbose=False,
+                        )
+                        if result is not None:
+                            st.metric("Model total", f"{result['pred_total']} pts")
+                            st.write(f"{home_team} {result['pred_home']} - {result['pred_away']} {away_team}")
+                            st.caption(f"{result['confidence']} | Win prob: {result['win_prob']:.1f}%")
+
+
+# ════════════════════════════════════════════════════════════
+# PAGE 2 — GAME PREDICTOR
+# ════════════════════════════════════════════════════════════
+
+elif page == "🏀 Game Predictor":
     st.title("🏀 NBA Game Score Predictor")
     st.markdown(
         "Select two teams to get an AI-powered score prediction "
@@ -144,10 +288,30 @@ if page == "🏀 Game Predictor":
             home_inj_str = st.text_input(
                 f"{home_team} players OUT (comma-separated)",
                 placeholder="e.g. Tatum, Brown")
+            if home_inj_str:
+                latest_season = None
+                if data.get("model_df") is not None and "SEASON" in data["model_df"].columns:
+                    latest_season = data["model_df"]["SEASON"].dropna().astype(str).max()
+                home_suggestions = _suggest_player_names(
+                    data.get("player_impact_df"), home_team, home_inj_str,
+                    latest_season=latest_season,
+                )
+                if home_suggestions:
+                    st.caption("Matches: " + ", ".join(home_suggestions))
         with col_inj2:
             away_inj_str = st.text_input(
                 f"{away_team} players OUT (comma-separated)",
                 placeholder="e.g. LeBron")
+            if away_inj_str:
+                latest_season = None
+                if data.get("model_df") is not None and "SEASON" in data["model_df"].columns:
+                    latest_season = data["model_df"]["SEASON"].dropna().astype(str).max()
+                away_suggestions = _suggest_player_names(
+                    data.get("player_impact_df"), away_team, away_inj_str,
+                    latest_season=latest_season,
+                )
+                if away_suggestions:
+                    st.caption("Matches: " + ", ".join(away_suggestions))
 
     home_out = [x.strip() for x in home_inj_str.split(",") if x.strip()] \
         if home_inj_str else []
