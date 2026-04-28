@@ -3,7 +3,7 @@
 NextPlay -- Configuration
 ========================
 Central configuration for all constants, paths, and feature definitions.
-Uses the V8 model with 100 features (SoS + player impact + margin rolling + ELO).
+Uses the V8 model feature set and stacked total model metadata.
 """
 
 import os
@@ -27,6 +27,7 @@ PREDICTION_LOG_PATH     = os.path.join(DATA_DIR, "prediction_log.csv")
 BACKTEST_RESULTS_PATH   = os.path.join(DATA_DIR, "backtest_results.csv")
 ELO_RATINGS_PATH        = os.path.join(DATA_DIR, "elo_ratings.csv")
 MARKET_LINES_PATH       = os.path.join(DATA_DIR, "market_lines.csv")
+ODDS_API_KEY            = os.getenv("ODDS_API_KEY", "")
 ODDS_API_BASE_URL       = os.getenv("ODDS_API_BASE_URL", "https://api.the-odds-api.com/v4")
 ODDS_SPORT_KEY          = os.getenv("ODDS_SPORT_KEY", "basketball_nba")
 
@@ -34,6 +35,15 @@ ODDS_SPORT_KEY          = os.getenv("ODDS_SPORT_KEY", "basketball_nba")
 MODEL_A_PATH = os.path.join(DATA_DIR, "model_A_home.pkl")
 MODEL_B_PATH = os.path.join(DATA_DIR, "model_B_away.pkl")
 MODEL_C_PATH = os.path.join(DATA_DIR, "model_C_total.pkl")
+
+# Playoff model files (trained on IS_PLAYOFF==True data only)
+MODEL_A_PLAYOFF_PATH = os.path.join(DATA_DIR, "model_A_playoff_home.pkl")
+MODEL_B_PLAYOFF_PATH = os.path.join(DATA_DIR, "model_B_playoff_away.pkl")
+MODEL_C_PLAYOFF_PATH = os.path.join(DATA_DIR, "model_C_playoff_total.pkl")
+
+# Playoff season month range (e.g., April-June = 4-6); use during these months
+PLAYOFF_SEASON_START_MONTH = 4
+PLAYOFF_SEASON_END_MONTH = 6
 
 
 # ????????????????????????????????????????????????????????????
@@ -48,9 +58,19 @@ NBA_TEAMS = sorted([
 
 SEASONS = ["2023-24", "2024-25", "2025-26"]
 
+# Whether to include playoff games when pulling data / rebuilding models
+INCLUDE_PLAYOFFS = False
+
+# Weight to apply to playoff rows during training (0 < weight <= 1).
+# A value <1 downweights playoff games to reduce their influence.
+WEIGHT_PLAYOFF_ROWS = 0.3
+
+# Use separate playoff models during playoff season (April-June)
+USE_PLAYOFF_MODELS = True
+
 
 # ????????????????????????????????????????????????????????????
-# FEATURE COLUMNS -- V8 FINAL (100 features)
+# FEATURE COLUMNS -- V8 FINAL
 # ????????????????????????????????????????????????????????????
 
 # Rolling form -- home team
@@ -160,13 +180,13 @@ PLAYER_FEATURES = [
     "AWAY_IMPACT_AVAIL",
 ]
 
-# Margin rolling (V7 addition -- garbage time filter)
+# Margin rolling features
 MARGIN_FEATURES = [
     "HOME_ROLL10_MARGIN",
     "AWAY_ROLL10_MARGIN",
 ]
 
-# ELO ratings (V8 addition)
+# ELO ratings
 ELO_FEATURES = [
     "HOME_ELO", "AWAY_ELO", "ELO_DIFF", "ELO_EXPECTED",
 ]
@@ -203,6 +223,7 @@ META_COLS = [
     "GAME_ID", "GAME_DATE", "SEASON",
     "HOME_TEAM", "AWAY_TEAM",
     "HOME_PTS", "AWAY_PTS", "TOTAL_PTS", "HOME_WIN",
+    "SEASON_TYPE", "IS_PLAYOFF",
 ]
 
 # Target columns

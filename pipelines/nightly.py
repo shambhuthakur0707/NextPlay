@@ -9,43 +9,73 @@ Run every morning to:
 """
 import pandas as pd
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from nba_api.stats.endpoints import leaguegamefinder, scoreboardv3
 
+from config import (
+    USE_PLAYOFF_MODELS,
+    PLAYOFF_SEASON_START_MONTH,
+    PLAYOFF_SEASON_END_MONTH,
+)
 from ingestion.odds import pull_closing_market_lines
 from prediction.predict import predict_game
 
 
-def get_last_night_games():
-    """Pull completed games from last night."""
-    yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+NBA_TZ = ZoneInfo("America/New_York")
 
-    print(f"Pulling games from {yesterday}...")
 
+def _now_et():
+    """Current time in NBA league timezone (US Eastern)."""
+    return datetime.now(NBA_TZ)
+
+
+def _today_et_str():
+    """Today's date string in US Eastern."""
+    return _now_et().strftime("%Y-%m-%d")
+
+
+def _yesterday_et_str():
+    """Yesterday's date string in US Eastern."""
+    return (_now_et() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def get_last_night_games(season_types=None):
+    """Pull completed games from last night for given season types."""
+    season_types = season_types or ["Regular Season"]
+    yesterday = _yesterday_et_str()
+
+    print(f"Pulling games from {yesterday} (types: {season_types})...")
+
+    frames = []
     try:
-        finder = leaguegamefinder.LeagueGameFinder(
-            date_from_nullable=yesterday,
-            date_to_nullable=yesterday,
-            league_id_nullable="00",
-            season_type_nullable="Regular Season",
-        ).get_data_frames()[0]
+        for stype in season_types:
+            finder = leaguegamefinder.LeagueGameFinder(
+                date_from_nullable=yesterday,
+                date_to_nullable=yesterday,
+                league_id_nullable="00",
+                season_type_nullable=stype,
+            ).get_data_frames()[0]
+            if len(finder) > 0:
+                finder["SEASON_TYPE"] = stype
+                frames.append(finder)
 
-        if len(finder) == 0:
+        if len(frames) == 0:
             print(f"  No games found for {yesterday}")
             return None
 
-        home = finder[finder["MATCHUP"].str.contains("vs.")].copy()
-        away = finder[finder["MATCHUP"].str.contains("@")].copy()
+        finder_all = pd.concat(frames, ignore_index=True)
+
+        home = finder_all[finder_all["MATCHUP"].str.contains("vs.")].copy()
+        away = finder_all[finder_all["MATCHUP"].str.contains("@")].copy()
 
         if len(home) == 0:
             return None
 
-        home = home.rename(columns={
-            "TEAM_ABBREVIATION": "HOME_TEAM", "PTS": "HOME_PTS"})
-        away = away.rename(columns={
-            "TEAM_ABBREVIATION": "AWAY_TEAM", "PTS": "AWAY_PTS"})
+        home = home.rename(columns={"TEAM_ABBREVIATION": "HOME_TEAM", "PTS": "HOME_PTS"})
+        away = away.rename(columns={"TEAM_ABBREVIATION": "AWAY_TEAM", "PTS": "AWAY_PTS"})
 
         games = pd.merge(
-            home[["GAME_ID", "GAME_DATE", "HOME_TEAM", "HOME_PTS"]],
+            home[["GAME_ID", "GAME_DATE", "HOME_TEAM", "HOME_PTS", "SEASON_TYPE"]],
             away[["GAME_ID", "AWAY_TEAM", "AWAY_PTS"]],
             on="GAME_ID",
         )
@@ -61,7 +91,7 @@ def get_last_night_games():
 
 def get_tonight_schedule():
     """Pull tonight's scheduled games."""
-    today = datetime.today().strftime("%Y-%m-%d")
+    today = _today_et_str()
 
     try:
         sb = scoreboardv3.ScoreboardV3(game_date=today, league_id="00")
@@ -98,9 +128,35 @@ def get_tonight_schedule():
         return []
 
 
+def is_playoff_season(now=None):
+    """Return True during the configured playoff window."""
+    now = now or datetime.today()
+    month = now.month
+    if PLAYOFF_SEASON_START_MONTH <= PLAYOFF_SEASON_END_MONTH:
+        return PLAYOFF_SEASON_START_MONTH <= month <= PLAYOFF_SEASON_END_MONTH
+    return month >= PLAYOFF_SEASON_START_MONTH or month <= PLAYOFF_SEASON_END_MONTH
+
+
+def select_active_models(models, now=None):
+    """Return the model set that matches the current season window."""
+    if not models:
+        return None, "none"
+
+    if USE_PLAYOFF_MODELS and is_playoff_season(now=now) and isinstance(models, dict):
+        playoff_models = models.get("playoff")
+        if playoff_models is not None:
+            return playoff_models, "playoff"
+
+    if isinstance(models, dict) and "regular" in models:
+        return models["regular"], "regular"
+
+    return models, "regular"
+
+
 def nightly_update(model_df, models, shot_df=None,
                    player_impact_df=None, feature_cols=None,
-                   home_injuries=None, away_injuries=None):
+                   home_injuries=None, away_injuries=None,
+                   include_playoffs=None):
     """
     Full nightly pipeline.
 
@@ -112,14 +168,28 @@ def nightly_update(model_df, models, shot_df=None,
     """
     home_injuries = home_injuries or {}
     away_injuries = away_injuries or {}
+    active_models, active_model_name = select_active_models(models)
 
     print("=" * 55)
-    print(f"NIGHTLY UPDATE -- {datetime.today().strftime('%Y-%m-%d')}")
+    print(f"NIGHTLY UPDATE (ET) -- {_today_et_str()}")
     print("=" * 55)
+    print(f"Active model set: {active_model_name}")
 
     # Step 1: Last night's results
     print("\n[PULL] STEP 1 -- Last night's results")
-    last_night = get_last_night_games()
+    # determine season types to pull (default to config.INCLUDE_PLAYOFFS if not provided)
+    if include_playoffs is None:
+        try:
+            from config import INCLUDE_PLAYOFFS
+            include_playoffs = INCLUDE_PLAYOFFS
+        except Exception:
+            include_playoffs = False
+
+    season_types = ["Regular Season"]
+    if include_playoffs:
+        season_types.append("Playoffs")
+
+    last_night = get_last_night_games(season_types=season_types)
 
     if last_night is not None and len(last_night) > 0:
         print("\n  Results:")
@@ -137,7 +207,7 @@ def nightly_update(model_df, models, shot_df=None,
 
     market_lines = None
     try:
-        today = datetime.today().strftime("%Y-%m-%d")
+        today = _today_et_str()
         market_lines = pull_closing_market_lines(date_from=today, date_to=today)
     except Exception as exc:
         print(f"  [WARN] Could not load market lines: {exc}")
@@ -160,7 +230,7 @@ def nightly_update(model_df, models, shot_df=None,
             a_out = away_injuries.get(away, [])
 
             predict_game(
-                home, away, model_df, models,
+                home, away, model_df, active_models,
                 shot_df=shot_df,
                 player_impact_df=player_impact_df,
                 feature_cols=feature_cols,

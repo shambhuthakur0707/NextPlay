@@ -2,11 +2,12 @@
 """
 NextPlay — NBA AI Score Predictor Dashboard
 =============================================
-Streamlit dashboard for the V7 NBA prediction system.
+Streamlit dashboard for the current NextPlay prediction system.
 Run with: streamlit run app.py
 """
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 import pandas as pd
@@ -19,10 +20,24 @@ from config import (
     DATA_DIR, MODEL_READY_PATH, SHOT_PROFILES_PATH,
     PLAYER_IMPACT_PATH, BACKTEST_RESULTS_PATH, ELO_RATINGS_PATH,
     NBA_TEAMS, FEATURE_COLS_FINAL,
+    USE_PLAYOFF_MODELS,
+    PLAYOFF_SEASON_START_MONTH, PLAYOFF_SEASON_END_MONTH,
 )
 from ingestion.odds import pull_closing_market_lines
-from models.train import load_models
+from models.train import load_models, load_playoff_models
 from prediction.predict import predict_game
+from utils.metadata import (
+    feature_category_counts,
+    project_metadata_snapshot,
+)
+
+
+NBA_TZ = ZoneInfo("America/New_York")
+
+
+def nba_today_date():
+    """Return current NBA calendar date in US Eastern timezone."""
+    return datetime.now(NBA_TZ).date()
 
 # ════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -81,9 +96,39 @@ def load_data():
 def load_cached_models():
     """Load trained models (cached as resource)."""
     try:
-        return load_models()
+        regular_models = load_models()
+        playoff_models = None
+        if USE_PLAYOFF_MODELS:
+            try:
+                playoff_models = load_playoff_models()
+            except FileNotFoundError:
+                playoff_models = None
+        return {
+            "regular": regular_models,
+            "playoff": playoff_models,
+        }
     except FileNotFoundError:
         return None
+
+
+def is_playoff_season(now=None):
+    """Return True during the playoff window configured in config.py."""
+    now = now or datetime.now()
+    month = now.month
+    if PLAYOFF_SEASON_START_MONTH <= PLAYOFF_SEASON_END_MONTH:
+        return PLAYOFF_SEASON_START_MONTH <= month <= PLAYOFF_SEASON_END_MONTH
+    return month >= PLAYOFF_SEASON_START_MONTH or month <= PLAYOFF_SEASON_END_MONTH
+
+
+def active_model_bundle(now=None):
+    """Return the currently active model bundle with fallback handling."""
+    if not models:
+        return None, "none"
+
+    if USE_PLAYOFF_MODELS and is_playoff_season(now) and models.get("playoff") is not None:
+        return models["playoff"], "playoff"
+
+    return models["regular"], "regular"
 
 
 def _suggest_player_names(player_impact_df, team_abbr, raw_text, latest_season=None, limit=5):
@@ -135,7 +180,7 @@ def get_games_for_date(game_date):
         game_header["gameTimeUTC"] = pd.to_datetime(game_header["gameTimeUTC"], utc=True)
 
         selected_games = game_header.copy()
-        if game_date == datetime.today().strftime("%Y-%m-%d"):
+        if game_date == nba_today_date().strftime("%Y-%m-%d"):
             now_utc = pd.Timestamp.now(tz=timezone.utc)
             selected_games = selected_games[selected_games["gameTimeUTC"] > now_utc]
 
@@ -160,13 +205,14 @@ def get_games_for_date(game_date):
 
 data = load_data()
 models = load_cached_models()
+metadata = project_metadata_snapshot()
 
 # ════════════════════════════════════════════════════════════
 # SIDEBAR
 # ════════════════════════════════════════════════════════════
 
 st.sidebar.title("🏀 NextPlay")
-st.sidebar.caption("NBA AI Score Predictor — V7")
+st.sidebar.caption(f"NBA AI Score Predictor — {metadata['model_version']}")
 st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
@@ -176,11 +222,13 @@ page = st.sidebar.radio(
 )
 
 if data["model_df"] is not None:
+    active_label = "Playoff" if is_playoff_season() and USE_PLAYOFF_MODELS else "Regular Season"
     st.sidebar.markdown("---")
     st.sidebar.markdown(
         f"**Dataset:** {len(data['model_df']):,} games  \n"
-        f"**Features:** {len(FEATURE_COLS_FINAL)}  \n"
-        f"**Model:** RandomForest V7"
+        f"**Features:** {metadata['base_feature_count']}  \n"
+        f"**Model Stack:** Home + Away + Stacked Total ({metadata['model_version']})  \n"
+        f"**Active Model:** {active_label}"
     )
 
 # ════════════════════════════════════════════════════════════
@@ -193,7 +241,7 @@ if page == "📅 Today’s Games":
 
     selected_date = st.date_input(
         "Select game date",
-        value=datetime.today().date(),
+        value=nba_today_date(),
         help="Defaults to today's slate.",
     )
 
@@ -229,15 +277,16 @@ if page == "📅 Today’s Games":
                     if market_total_line is not None and pd.notna(market_total_line):
                         st.write(f"Sportsbook total: {float(market_total_line):.1f}")
                 with right:
-                    if models is not None and data["model_df"] is not None:
+                    active_models, _ = active_model_bundle(pd.Timestamp(selected_date))
+                    if active_models is not None and data["model_df"] is not None:
                         try:
-                            feature_cols = list(models["model_C"].feature_names_in_)
+                            feature_cols = list(active_models["model_C"].feature_names_in_)
                         except Exception:
                             feature_cols = [c for c in FEATURE_COLS_FINAL if c in data["model_df"].columns]
 
                         result = predict_game(
                             home_team, away_team,
-                            data["model_df"], models,
+                            data["model_df"], active_models,
                             shot_df=data.get("shot_df"),
                             player_impact_df=data.get("player_impact_df"),
                             feature_cols=feature_cols,
@@ -268,6 +317,8 @@ elif page == "🏀 Game Predictor":
             "to the `data/` directory and restart."
         )
         st.stop()
+
+    active_models, active_name = active_model_bundle()
 
     col1, col2 = st.columns(2)
     with col1:
@@ -323,14 +374,14 @@ elif page == "🏀 Game Predictor":
         with st.spinner("Analyzing matchup..."):
             feature_cols = None
             try:
-                feature_cols = list(models["model_C"].feature_names_in_)
+                feature_cols = list(active_models["model_C"].feature_names_in_)
             except Exception:
                 feature_cols = [c for c in FEATURE_COLS_FINAL
                                 if c in data["model_df"].columns]
 
             result = predict_game(
                 home_team, away_team,
-                data["model_df"], models,
+                data["model_df"], active_models,
                 shot_df=data.get("shot_df"),
                 player_impact_df=data.get("player_impact_df"),
                 feature_cols=feature_cols,
@@ -359,6 +410,8 @@ elif page == "🏀 Game Predictor":
             </p>
         </div>
         """, unsafe_allow_html=True)
+
+        st.caption(f"Active model: {active_name}")
 
         # Injury log
         if result.get("injury_log"):
@@ -398,10 +451,10 @@ elif page == "📊 Model Dashboard":
         st.error("⚠️ Models not loaded.")
         st.stop()
 
-    st.subheader("📉 MAE Journey")
+    st.subheader("📉 MAE Journey (Historical Milestones)")
     mae_data = pd.DataFrame({
         "Version": ["V1 Rolling", "V2 Defense", "V3 Shots",
-                     "V4 EWM", "V5 Players", "V7 SoS+Filter"],
+                     "V4 EWM", "V5 Players", "V6 SoS+Filter"],
         "Total MAE": [15.27, 14.99, 14.89, 14.82, 14.80, 14.52],
         "Features": [37, 41, 58, 70, 82, 84],
     })
@@ -435,10 +488,16 @@ elif page == "📊 Model Dashboard":
 
     # Key metrics
     st.subheader("📈 Key Metrics")
+    model_c_name = "Stacked Total Model"
+    try:
+        model_c_name = type(models["model_C"]).__name__
+    except Exception:
+        pass
+
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Features", "84", "V7")
+    m1.metric("Base Features", str(metadata["base_feature_count"]), metadata["model_version"])
     m2.metric("Training Seasons", "3", "2023–2026")
-    m3.metric("Model Type", "RandomForest", "400 trees")
+    m3.metric("Model C Type", model_c_name, "stacked total")
     m4.metric("Target MAE", "< 14.5 pts", "Total points")
 
 
@@ -490,20 +549,24 @@ elif page == "🏆 Team Rankings":
 
 elif page == "ℹ️ About":
     st.title("ℹ️ About NextPlay")
+
     st.markdown("""
-    ## NBA AI Score Predictor — V7
+    ## NBA AI Score Predictor
 
     NextPlay uses machine learning to predict NBA game scores
-    using **84 engineered features** across 6 categories:
+    using a three-model stack (home, away, and total).
+    """)
 
-    | Category | Features | Examples |
-    |---|---|---|
-    | Rolling Form | 23 | Last 10 game averages |
-    | Rest & Momentum | 6 | Rest days, win streaks |
-    | Context | 5 | Season stage, home court |
-    | Defensive | 4 | Points allowed rolling |
-    | Shot Profiles | 17 | 3PT rate, paint rate, PPS |
-    | Advanced | 29 | EWM, SoS, player impact |
+    feature_table = pd.DataFrame(
+        feature_category_counts(),
+        columns=["Category", "Features", "Description"],
+    )
+    st.dataframe(feature_table, use_container_width=True, hide_index=True)
+
+    st.markdown(f"""
+    **Current model version:** {metadata['model_version']}  
+    **Base feature count:** {metadata['base_feature_count']}  
+    **Stacked total features:** {metadata['stacked_total_feature_count']}
 
     ### How It Works
     1. **Three models** predict home score, away score, and total
@@ -512,8 +575,8 @@ elif page == "ℹ️ About":
     4. **Nightly updates** keep the model current
 
     ### Tech Stack
-    - **ML**: scikit-learn RandomForest (400 trees)
+    - **ML**: scikit-learn + LightGBM ensemble stack
     - **Data**: nba_api (official NBA stats)
     - **Dashboard**: Streamlit + Plotly
-    - **Features**: 84 engineered features (V7)
+    - **Features**: configuration-driven feature registry from config.py
     """)

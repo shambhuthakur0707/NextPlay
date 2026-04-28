@@ -18,7 +18,12 @@ from ingestion.shots import pull_all_shot_profiles
 from ingestion.players import build_player_impact
 from ingestion.odds import pull_closing_market_lines
 from features.pipeline import build_full_features
-from models.train import train_models, save_models
+from models.train import (
+    train_models,
+    save_models,
+    train_playoff_models,
+    save_playoff_models,
+)
 from optimize import run_optimization
 
 
@@ -26,7 +31,8 @@ def full_rebuild(seasons=None, skip_api=False,
                  run_model_optimization=True,
                  optimize_walk_forward=True,
                  train_window=800, step=50,
-                 include_market_lines=True):
+                 include_market_lines=True,
+                 include_playoffs=None):
     """
     Full pipeline rebuild from API to saved models.
 
@@ -39,6 +45,13 @@ def full_rebuild(seasons=None, skip_api=False,
         step: walk-forward step size
     """
     seasons = seasons or SEASONS
+    # allow override; default to config setting if not provided
+    if include_playoffs is None:
+        try:
+            from config import INCLUDE_PLAYOFFS
+            include_playoffs = INCLUDE_PLAYOFFS
+        except Exception:
+            include_playoffs = False
     os.makedirs(DATA_DIR, exist_ok=True)
 
     print("=" * 55)
@@ -46,13 +59,17 @@ def full_rebuild(seasons=None, skip_api=False,
     print("=" * 55)
 
     # Step 1: Game logs
+    season_types = ["Regular Season"]
+    if include_playoffs:
+        season_types.append("Playoffs")
+
     if skip_api and os.path.exists(GAMELOGS_ALL_PATH):
         print("\n[LOAD] Loading gamelogs from disk...")
         gamelogs = pd.read_csv(GAMELOGS_ALL_PATH)
         gamelogs["GAME_DATE"] = pd.to_datetime(gamelogs["GAME_DATE"])
     else:
         print("\n[STEP 1] Pulling game logs from NBA API...")
-        gamelogs = pull_multi_season(seasons)
+        gamelogs = pull_multi_season(seasons, season_types=season_types)
         gamelogs.to_csv(GAMELOGS_ALL_PATH, index=False)
 
     # Step 2: Build game-level dataset
@@ -129,6 +146,15 @@ def full_rebuild(seasons=None, skip_api=False,
             test_season=test_season,
         )
         save_models(result)
+
+        if include_playoffs:
+            print("\n[PLAYOFF] Training playoff-only models...")
+            playoff_result = train_playoff_models(model_df)
+            if playoff_result is not None:
+                save_playoff_models(playoff_result)
+                result["playoff_result"] = playoff_result
+            else:
+                print("[WARN] Skipping playoff model save (no playoff games found)")
 
     print(f"\n{'=' * 55}")
     print(f"[OK] FULL REBUILD COMPLETE")

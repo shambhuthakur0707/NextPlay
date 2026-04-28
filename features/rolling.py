@@ -25,17 +25,22 @@ def _build_team_history(games):
     """Convert one-row-per-game data into one-row-per-team-game data."""
     df = games.copy().sort_values("GAME_DATE").reset_index(drop=True)
 
-    home = df[
-        [
-            "GAME_ID", "GAME_DATE", "SEASON", "HOME_TEAM", "AWAY_TEAM",
-            "HOME_PTS", "HOME_FGM", "HOME_FGA", "HOME_FG_PCT",
-            "HOME_FG3M", "HOME_FG3A", "HOME_FG3_PCT",
-            "HOME_FTM", "HOME_FTA", "HOME_FT_PCT",
-            "HOME_AST", "HOME_TOV", "HOME_OREB", "HOME_DREB",
-            "HOME_REB", "HOME_PF", "HOME_PLUS_MINUS",
-            "TOTAL_PTS",
-        ]
-    ].copy()
+    home_cols = [
+        "GAME_ID", "GAME_DATE", "SEASON", "HOME_TEAM", "AWAY_TEAM",
+        "HOME_PTS", "HOME_FGM", "HOME_FGA", "HOME_FG_PCT",
+        "HOME_FG3M", "HOME_FG3A", "HOME_FG3_PCT",
+        "HOME_FTM", "HOME_FTA", "HOME_FT_PCT",
+        "HOME_AST", "HOME_TOV", "HOME_OREB", "HOME_DREB",
+        "HOME_REB", "HOME_PF", "HOME_PLUS_MINUS",
+        "TOTAL_PTS",
+    ]
+    # Preserve IS_PLAYOFF and SEASON_TYPE if present
+    if "IS_PLAYOFF" in df.columns:
+        home_cols.append("IS_PLAYOFF")
+    if "SEASON_TYPE" in df.columns:
+        home_cols.append("SEASON_TYPE")
+    
+    home = df[home_cols].copy()
     home["TEAM_ABBR"] = home["HOME_TEAM"]
     home["OPP_TEAM"] = home["AWAY_TEAM"]
     home["IS_HOME"] = True
@@ -62,17 +67,22 @@ def _build_team_history(games):
     )
     home["OPP_PTS"] = df["AWAY_PTS"].values
 
-    away = df[
-        [
-            "GAME_ID", "GAME_DATE", "SEASON", "HOME_TEAM", "AWAY_TEAM",
-            "AWAY_PTS", "AWAY_FGM", "AWAY_FGA", "AWAY_FG_PCT",
-            "AWAY_FG3M", "AWAY_FG3A", "AWAY_FG3_PCT",
-            "AWAY_FTM", "AWAY_FTA", "AWAY_FT_PCT",
-            "AWAY_AST", "AWAY_TOV", "AWAY_OREB", "AWAY_DREB",
-            "AWAY_REB", "AWAY_PF", "AWAY_PLUS_MINUS",
-            "TOTAL_PTS",
-        ]
-    ].copy()
+    away_cols = [
+        "GAME_ID", "GAME_DATE", "SEASON", "HOME_TEAM", "AWAY_TEAM",
+        "AWAY_PTS", "AWAY_FGM", "AWAY_FGA", "AWAY_FG_PCT",
+        "AWAY_FG3M", "AWAY_FG3A", "AWAY_FG3_PCT",
+        "AWAY_FTM", "AWAY_FTA", "AWAY_FT_PCT",
+        "AWAY_AST", "AWAY_TOV", "AWAY_OREB", "AWAY_DREB",
+        "AWAY_REB", "AWAY_PF", "AWAY_PLUS_MINUS",
+        "TOTAL_PTS",
+    ]
+    # Preserve IS_PLAYOFF and SEASON_TYPE if present
+    if "IS_PLAYOFF" in df.columns:
+        away_cols.append("IS_PLAYOFF")
+    if "SEASON_TYPE" in df.columns:
+        away_cols.append("SEASON_TYPE")
+    
+    away = df[away_cols].copy()
     away["TEAM_ABBR"] = away["AWAY_TEAM"]
     away["OPP_TEAM"] = away["HOME_TEAM"]
     away["IS_HOME"] = False

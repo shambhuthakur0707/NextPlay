@@ -14,7 +14,7 @@ from nba_api.stats.static import teams as nba_teams_static
 from config import API_DELAY
 
 
-def pull_team_gamelogs(season="2024-25"):
+def pull_team_gamelogs(season="2024-25", season_type="Regular Season"):
     """
     Pull game logs for all 30 NBA teams for a given season.
 
@@ -34,10 +34,11 @@ def pull_team_gamelogs(season="2024-25"):
             logs = teamgamelogs.TeamGameLogs(
                 team_id_nullable=team["id"],
                 season_nullable=season,
-                season_type_nullable="Regular Season",
+                season_type_nullable=season_type,
             ).get_data_frames()[0]
 
             logs["TEAM_ABBR"] = team["abbreviation"]
+            logs["SEASON_TYPE"] = season_type
             logs["SEASON"] = season
             all_logs.append(logs)
 
@@ -52,7 +53,7 @@ def pull_team_gamelogs(season="2024-25"):
     return df
 
 
-def pull_multi_season(seasons):
+def pull_multi_season(seasons, season_types=None):
     """
     Pull game logs for multiple seasons and combine.
 
@@ -64,9 +65,12 @@ def pull_multi_season(seasons):
     """
     all_dfs = []
 
+    season_types = season_types or ["Regular Season"]
+
     for i, season in enumerate(seasons):
-        df = pull_team_gamelogs(season)
-        all_dfs.append(df)
+        for stype in season_types:
+            df = pull_team_gamelogs(season, season_type=stype)
+            all_dfs.append(df)
         print(f"\n[OK] {season} done -- {len(df)} rows\n")
 
         if i < len(seasons) - 1:
@@ -146,6 +150,12 @@ def build_game_level_dataset(gamelogs):
     games["HOME_WIN"] = (games["HOME_WL"] == "W").astype(int)
     games["PTS_MARGIN"] = games["HOME_PTS"] - games["AWAY_PTS"]
     games = games.sort_values("GAME_DATE").reset_index(drop=True)
+
+    # Preserve season type / playoffs flag where available
+    if "SEASON_TYPE" in home.columns:
+        # Prefer home SEASON_TYPE if present
+        games["SEASON_TYPE"] = home.set_index("GAME_ID")["SEASON_TYPE"].reindex(games["GAME_ID"]).values
+    games["IS_PLAYOFF"] = games.get("SEASON_TYPE", "Regular Season") == "Playoffs"
 
     print(f"[OK] Game-level dataset built")
     print(f"   Total games : {len(games)}")
