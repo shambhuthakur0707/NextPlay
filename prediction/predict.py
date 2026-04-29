@@ -59,7 +59,9 @@ def _find_player_impact_matches(player_impact_df, player_name, team_abbr=None, l
 def predict_game(home_team, away_team, model_df, models, shot_df=None,
                  player_impact_df=None, feature_cols=None,
                  home_out=None, away_out=None, raw_gamelogs=None,
-                 game_date=None, market_total_line=None, verbose=True):
+                 game_date=None, market_total_line=None, verbose=True,
+                 series_game_num=None, home_series_wins=None,
+                 away_series_wins=None):
     """
     Predict the score of any NBA matchup.
 
@@ -77,6 +79,9 @@ def predict_game(home_team, away_team, model_df, models, shot_df=None,
         game_date: optional matchup date for the feature builder
         market_total_line: optional sportsbook total to calibrate the final total
         verbose: print full report
+        series_game_num: game number within a playoff series (1-7)
+        home_series_wins: home team's series wins entering this game (0-3)
+        away_series_wins: away team's series wins entering this game (0-3)
 
     Returns:
         dict with all prediction values
@@ -101,6 +106,9 @@ def predict_game(home_team, away_team, model_df, models, shot_df=None,
         raw_gamelogs=raw_gamelogs,
         game_date=game_date,
         feature_cols=base_feature_cols,
+        series_game_num=series_game_num,
+        home_series_wins=home_series_wins,
+        away_series_wins=away_series_wins,
     )
 
     if feature_frame is None or len(feature_frame) == 0:

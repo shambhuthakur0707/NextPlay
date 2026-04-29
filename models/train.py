@@ -2,7 +2,9 @@
 """
 NextPlay -- Model Training
 ===========================
-Trains RandomForest models A (home), B (away), C (total).
+Trains models A (home), B (away), C (total) using any sklearn-compatible
+estimator.  Defaults to RandomForest but the optimizer can inject XGBoost,
+CatBoost, LightGBM, or VotingRegressor.
 Includes garbage time and OT filtering for clean training data.
 """
 import pickle
@@ -20,6 +22,11 @@ from config import (
     WEIGHT_PLAYOFF_ROWS,
 )
 from models.stacking import build_total_meta_features
+
+
+def _default_model_factory():
+    """Return a default RandomForestRegressor using config params."""
+    return RandomForestRegressor(**RF_PARAMS)
 
 
 def filter_training_data(train_df):
@@ -166,51 +173,193 @@ def load_models(path_a=MODEL_A_PATH, path_b=MODEL_B_PATH,
     return {"model_A": model_A, "model_B": model_B, "model_C": model_C}
 
 
-def train_playoff_models(model_df):
+def train_models_v2(model_df, model_factory_a=None, model_factory_b=None,
+                     model_factory_c=None, train_seasons=None,
+                     test_season=None, apply_filter=True,
+                     weight_playoff_rows=None):
+    """Train models A/B/C using injectable model factories.
+
+    This is the flexible version of train_models() that accepts any
+    sklearn-compatible estimator factory.  Used by the optimizer to
+    plug in XGBoost, CatBoost, VotingRegressor, etc.
+
+    Args:
+        model_df: feature-engineered DataFrame
+        model_factory_a: callable -> estimator for home score (default: RF)
+        model_factory_b: callable -> estimator for away score (default: RF)
+        model_factory_c: callable -> estimator for total score (default: RF)
+        train_seasons: list of seasons for training
+        test_season: season for testing
+        apply_filter: whether to apply garbage time filter
+        weight_playoff_rows: playoff row sample weight
+
+    Returns:
+        dict with models, MAE scores, and feature columns used
     """
-    Train models on playoff games only (IS_PLAYOFF==True).
-    
+    model_factory_a = model_factory_a or _default_model_factory
+    model_factory_b = model_factory_b or _default_model_factory
+    model_factory_c = model_factory_c or _default_model_factory
+
+    feature_cols = [c for c in FEATURE_COLS_FINAL if c in model_df.columns]
+    meta_feature_cols = STACKED_TOTAL_FEATURES
+
+    if train_seasons and test_season:
+        train = model_df[model_df["SEASON"].isin(train_seasons)].copy()
+        test = model_df[model_df["SEASON"] == test_season].copy()
+    else:
+        model_df = model_df.sort_values("GAME_DATE").reset_index(drop=True)
+        split_idx = int(len(model_df) * 0.80)
+        train = model_df.iloc[:split_idx].copy()
+        test = model_df.iloc[split_idx:].copy()
+
+    if apply_filter and "PTS_MARGIN" in train.columns:
+        train = filter_training_data(train)
+
+    train = train.dropna(subset=feature_cols)
+    test = test.dropna(subset=feature_cols)
+
+    X_train = train[feature_cols]
+    X_test = test[feature_cols]
+
+    if weight_playoff_rows is None:
+        weight_playoff_rows = WEIGHT_PLAYOFF_ROWS
+    train_weights = np.ones(len(train), dtype=float)
+    if "IS_PLAYOFF" in train.columns and weight_playoff_rows is not None:
+        train_weights = np.where(train["IS_PLAYOFF"], weight_playoff_rows, 1.0)
+
+    print(f"\n  Training: {len(train)} games")
+    print(f"  Testing:  {len(test)} games")
+    print(f"  Features: {len(feature_cols)}")
+
+    # Model A
+    rf_A = model_factory_a()
+    model_a_name = type(rf_A).__name__
+    print(f"\n  Training Model A ({model_a_name})...")
+    try:
+        rf_A.fit(X_train, train["HOME_PTS"], sample_weight=train_weights)
+    except TypeError:
+        rf_A.fit(X_train, train["HOME_PTS"])
+    mae_home = mean_absolute_error(test["HOME_PTS"], rf_A.predict(X_test))
+
+    # Model B
+    rf_B = model_factory_b()
+    model_b_name = type(rf_B).__name__
+    print(f"  Training Model B ({model_b_name})...")
+    try:
+        rf_B.fit(X_train, train["AWAY_PTS"], sample_weight=train_weights)
+    except TypeError:
+        rf_B.fit(X_train, train["AWAY_PTS"])
+    mae_away = mean_absolute_error(test["AWAY_PTS"], rf_B.predict(X_test))
+
+    # Model C (stacked)
+    train_meta = build_total_meta_features(
+        train[feature_cols], rf_A.predict(X_train), rf_B.predict(X_train),
+        feature_cols=meta_feature_cols,
+    )
+    test_meta = build_total_meta_features(
+        test[feature_cols], rf_A.predict(X_test), rf_B.predict(X_test),
+        feature_cols=meta_feature_cols,
+    )
+    rf_C = model_factory_c()
+    model_c_name = type(rf_C).__name__
+    print(f"  Training Model C ({model_c_name})...")
+    try:
+        rf_C.fit(train_meta, train["TOTAL_PTS"], sample_weight=train_weights)
+    except TypeError:
+        rf_C.fit(train_meta, train["TOTAL_PTS"])
+    mae_total = mean_absolute_error(test["TOTAL_PTS"], rf_C.predict(test_meta))
+
+    print(f"\n  {'=' * 45}")
+    print(f"  RESULTS  (A={model_a_name}, B={model_b_name}, C={model_c_name})")
+    print(f"  {'=' * 45}")
+    print(f"  Home MAE  : {mae_home:.2f} pts")
+    print(f"  Away MAE  : {mae_away:.2f} pts")
+    print(f"  Total MAE : {mae_total:.2f} pts")
+
+    return {
+        "model_A": rf_A,
+        "model_B": rf_B,
+        "model_C": rf_C,
+        "mae_home": mae_home,
+        "mae_away": mae_away,
+        "mae_total": mae_total,
+        "feature_cols": feature_cols,
+        "meta_feature_cols": meta_feature_cols,
+    }
+
+
+def train_playoff_models(model_df, upweight_factor=None):
+    """
+    Train playoff-optimized models using ALL games with playoff upweighting.
+
+    Strategy: train on the full dataset but give playoff rows 3x weight.
+    The model learns general basketball patterns from reg-season data AND
+    playoff-specific patterns (home-court boost, elimination intensity, etc.)
+    from the upweighted playoff rows + the new playoff feature columns.
+
+    This avoids the old problem of training on ~200 playoff-only games which
+    is far too small for RandomForest to learn meaningful splits.
+
     Args:
         model_df: feature-engineered DataFrame with IS_PLAYOFF column
-    
+        upweight_factor: weight multiplier for playoff rows (default: config)
+
     Returns:
         dict with playoff models, MAE scores, and feature columns
     """
+    from config import PLAYOFF_UPWEIGHT_FACTOR
+
+    if upweight_factor is None:
+        upweight_factor = PLAYOFF_UPWEIGHT_FACTOR
+
     feature_cols = [c for c in FEATURE_COLS_FINAL if c in model_df.columns]
     meta_feature_cols = STACKED_TOTAL_FEATURES
-    
-    # Filter to playoff games only
-    playoff_df = model_df[model_df.get("IS_PLAYOFF", False)].copy()
-    
-    if len(playoff_df) == 0:
+
+    has_playoff = "IS_PLAYOFF" in model_df.columns
+    n_playoff = int(model_df["IS_PLAYOFF"].sum()) if has_playoff else 0
+
+    if n_playoff == 0:
         print("[WARN] No playoff games found in dataset. Returning None.")
         return None
-    
-    playoff_df = playoff_df.dropna(subset=feature_cols)
-    
-    # Use 70/30 split since playoff dataset is small
-    playoff_df = playoff_df.sort_values("GAME_DATE").reset_index(drop=True)
-    split_idx = int(len(playoff_df) * 0.70)
-    train = playoff_df.iloc[:split_idx].copy()
-    test = playoff_df.iloc[split_idx:].copy()
-    
+
+    model_df = model_df.sort_values("GAME_DATE").reset_index(drop=True)
+    model_df = model_df.dropna(subset=feature_cols)
+
+    # 80/20 time-based split; test on playoff games in the holdout
+    split_idx = int(len(model_df) * 0.80)
+    train = model_df.iloc[:split_idx].copy()
+    test_all = model_df.iloc[split_idx:].copy()
+
+    # Evaluate specifically on playoff games in the test set
+    test_playoff = test_all[test_all["IS_PLAYOFF"] == 1].copy()
+    test = test_playoff if len(test_playoff) >= 10 else test_all
+
+    # Build sample weights: upweight playoff rows
+    train_weights = np.ones(len(train), dtype=float)
+    train_weights = np.where(
+        train["IS_PLAYOFF"] == 1, upweight_factor, 1.0
+    )
+
+    n_train_playoff = int(train["IS_PLAYOFF"].sum())
     X_train = train[feature_cols]
     X_test = test[feature_cols]
-    
-    print(f"\n  [PLAYOFF] Training: {len(train)} games")
-    print(f"  [PLAYOFF] Testing:  {len(test)} games")
+
+    print(f"\n  [PLAYOFF] Training: {len(train)} games "
+          f"({n_train_playoff} playoff, upweight={upweight_factor}x)")
+    print(f"  [PLAYOFF] Testing:  {len(test)} games "
+          f"({int(test['IS_PLAYOFF'].sum())} playoff)")
     print(f"  [PLAYOFF] Features: {len(feature_cols)}")
-    
+
     # Model A: Home score
     rf_A = RandomForestRegressor(**RF_PARAMS)
-    rf_A.fit(X_train, train["HOME_PTS"])
+    rf_A.fit(X_train, train["HOME_PTS"], sample_weight=train_weights)
     mae_home = mean_absolute_error(test["HOME_PTS"], rf_A.predict(X_test))
-    
+
     # Model B: Away score
     rf_B = RandomForestRegressor(**RF_PARAMS)
-    rf_B.fit(X_train, train["AWAY_PTS"])
+    rf_B.fit(X_train, train["AWAY_PTS"], sample_weight=train_weights)
     mae_away = mean_absolute_error(test["AWAY_PTS"], rf_B.predict(X_test))
-    
+
     # Model C: stacked total
     train_meta = build_total_meta_features(
         train[feature_cols],
@@ -225,16 +374,16 @@ def train_playoff_models(model_df):
         feature_cols=meta_feature_cols,
     )
     rf_C = RandomForestRegressor(**RF_PARAMS)
-    rf_C.fit(train_meta, train["TOTAL_PTS"])
+    rf_C.fit(train_meta, train["TOTAL_PTS"], sample_weight=train_weights)
     mae_total = mean_absolute_error(test["TOTAL_PTS"], rf_C.predict(test_meta))
-    
+
     print(f"\n  [PLAYOFF] {'=' * 45}")
-    print(f"  [PLAYOFF] RESULTS")
+    print(f"  [PLAYOFF] RESULTS (blended + upweighted)")
     print(f"  [PLAYOFF] {'=' * 45}")
     print(f"  [PLAYOFF] Home MAE  : {mae_home:.2f} pts")
     print(f"  [PLAYOFF] Away MAE  : {mae_away:.2f} pts")
     print(f"  [PLAYOFF] Total MAE : {mae_total:.2f} pts")
-    
+
     return {
         "model_A": rf_A,
         "model_B": rf_B,

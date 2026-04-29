@@ -2,7 +2,7 @@ import pathlib
 import re
 import unittest
 
-from utils.metadata import project_metadata_snapshot
+from utils.metadata import feature_category_counts, project_metadata_snapshot
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -35,6 +35,15 @@ class MetadataSyncTests(unittest.TestCase):
         match = re.search(r"\| \*\*Total\*\* \| \*\*(\d+)\*\* \|", self.readme)
         self.assertIsNotNone(match, "README feature coverage table total row is missing.")
         self.assertEqual(int(match.group(1)), self.meta["base_feature_count"])
+
+    def test_feature_category_counts_include_playoff(self):
+        counts = feature_category_counts()
+        names = [name for name, _, _ in counts]
+        self.assertIn("Playoff", names)
+        self.assertEqual(
+            sum(count for _, count, _ in counts),
+            self.meta["base_feature_count"],
+        )
 
     def test_app_uses_metadata_helper(self):
         self.assertIn("project_metadata_snapshot", self.app)

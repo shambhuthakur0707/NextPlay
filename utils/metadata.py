@@ -19,6 +19,7 @@ from config import (
     PLAYER_FEATURES,
     MARGIN_FEATURES,
     ELO_FEATURES,
+    PLAYOFF_FEATURES,
 )
 
 
@@ -44,6 +45,7 @@ def feature_category_counts():
         ("Player Impact", len(PLAYER_FEATURES), "Availability and impact aggregates"),
         ("Margin", len(MARGIN_FEATURES), "Rolling margin stability signals"),
         ("ELO", len(ELO_FEATURES), "ELO and expected win strength"),
+        ("Playoff", len(PLAYOFF_FEATURES), "Playoff-specific context and intensity signals"),
     ]
 
 

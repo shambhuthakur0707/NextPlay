@@ -3,9 +3,9 @@
 NextPlay is an end-to-end NBA score prediction system with data ingestion, feature engineering, model training, live prediction, and backtesting workflows.
 
 Current codebase status:
-- Model version: V8
-- Base model feature set: 148 engineered features
-- Total-points model: stacked meta-model (12 meta features)
+- Model version: V9
+- Base model feature set: 160 engineered features
+- Total-points model: stacked meta-model (17 meta features)
 - Live prediction supports injury adjustments and optional sportsbook-total blending
 - Source of truth for version/features: `config.py` (`MODEL_VERSION`, `FEATURE_COLS_FINAL`, `STACKED_TOTAL_FEATURES`)
 
@@ -32,7 +32,7 @@ Current codebase status:
 
 ## Feature Coverage (From `config.py`)
 
-`FEATURE_COLS_FINAL` currently contains 148 base features:
+`FEATURE_COLS_FINAL` currently contains 160 base features:
 
 | Category | Count |
 |---|---:|
@@ -50,7 +50,8 @@ Current codebase status:
 | Player impact | 20 |
 | Margin rolling | 2 |
 | ELO | 4 |
-| **Total** | **148** |
+| Playoff | 12 |
+| **Total** | **160** |
 
 The stacked total model uses `STACKED_TOTAL_FEATURES` (12 columns).
 
@@ -119,7 +120,7 @@ Training behavior:
 
 - `full_rebuild(..., include_playoffs=True)` pulls both Regular Season and Playoffs.
 - Regular models train as before on the configured train/test split.
-- Playoff models train on `IS_PLAYOFF == True` rows only and are saved separately.
+- Playoff models train on the full dataset with playoff rows upweighted and playoff-specific features enabled.
 
 Runtime switching behavior:
 

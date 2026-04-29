@@ -162,9 +162,69 @@ def _apply_derived_features(row):
             row["EWM_EXPECTED_TOTAL"] = (home_ewm + away_ewm + home_def + away_def) / 2
 
 
+def _apply_playoff_features(row, is_playoff=False):
+    """Populate playoff features for live inference.
+
+    When ``is_playoff`` is True the function computes playoff-specific
+    signals from already-populated context features.  When False every
+    playoff column is zeroed out so the model sees a clean regular-season
+    signal.
+    """
+    from config import PLAYOFF_FEATURES
+
+    if not is_playoff:
+        for col in PLAYOFF_FEATURES:
+            row[col] = 0.0
+        return
+
+    row["IS_PLAYOFF"] = 1
+
+    # Home-court boost (amplified in playoffs)
+    home_strength = row.get("HOME_COURT_STRENGTH", 0.5)
+    delta = 0.06  # historical playoff vs reg-season home-win-rate gap
+    row["PLAYOFF_HOME_BOOST"] = delta * (1 + (home_strength if pd.notna(home_strength) else 0.5))
+
+    # Road penalty
+    away_strength = row.get("AWAY_TEAM_STRENGTH", 0.5)
+    row["PLAYOFF_ROAD_PENALTY"] = -delta * (1 + (1 - (away_strength if pd.notna(away_strength) else 0.5)))
+
+    # Rest advantage interaction
+    rest_diff = row.get("REST_DAYS_DIFF", 0)
+    row["PLAYOFF_REST_ADVANTAGE"] = (rest_diff if pd.notna(rest_diff) else 0) * 1.5
+
+    # Default playoff win pcts (use historical base row values if present)
+    for col in ["HOME_PLAYOFF_WIN_PCT", "AWAY_PLAYOFF_WIN_PCT"]:
+        if col not in row or pd.isna(row.get(col)):
+            row[col] = 0.5
+
+    # Series-state defaults for live prediction (caller can override)
+    for col in ["SERIES_GAME_NUM", "IS_ELIMINATION", "IS_CLOSEOUT",
+                "HOME_SERIES_LEAD", "AWAY_SERIES_LEAD"]:
+        if col not in row or pd.isna(row.get(col)):
+            row[col] = 0.0
+
+    # Intensity (will be low if series state isn't provided)
+    gnum = row.get("SERIES_GAME_NUM", 0) or 0
+    elim = row.get("IS_ELIMINATION", 0) or 0
+    lead = abs(row.get("HOME_SERIES_LEAD", 0) or 0)
+    intensity = min(gnum * 10, 70) + (20 if elim else 0) + (10 if lead <= 1 else 0)
+    row["PLAYOFF_INTENSITY"] = min(intensity, 100)
+
+
 def build_game_features(home_team, away_team, model_df=None, raw_gamelogs=None,
-                        game_date=None, feature_cols=None, window=ROLLING_WINDOW):
-    """Build a single matchup feature row for live inference."""
+                        game_date=None, feature_cols=None, window=ROLLING_WINDOW,
+                        is_playoff=None, series_game_num=None,
+                        home_series_wins=None, away_series_wins=None):
+    """Build a single matchup feature row for live inference.
+
+    New playoff args (optional):
+        is_playoff: force playoff mode (auto-detected from date if None)
+        series_game_num: game number within the series (1-7)
+        home_series_wins: home team's series wins entering this game
+        away_series_wins: away team's series wins entering this game
+    """
+    from config import PLAYOFF_SEASON_START_MONTH, PLAYOFF_SEASON_END_MONTH
+
     base_history_df = _normalize_base_frame(model_df=model_df)
     rolling_history_df = _normalize_history_frame(model_df=model_df, raw_gamelogs=raw_gamelogs)
 
@@ -202,6 +262,32 @@ def build_game_features(home_team, away_team, model_df=None, raw_gamelogs=None,
     _apply_snapshot("HOME", feature_row, home_snap)
     _apply_snapshot("AWAY", feature_row, away_snap)
     _apply_derived_features(feature_row)
+
+    # ── Playoff features ────────────────────────────────────
+    if is_playoff is None:
+        month = game_date.month
+        if PLAYOFF_SEASON_START_MONTH <= PLAYOFF_SEASON_END_MONTH:
+            is_playoff = PLAYOFF_SEASON_START_MONTH <= month <= PLAYOFF_SEASON_END_MONTH
+        else:
+            is_playoff = month >= PLAYOFF_SEASON_START_MONTH or month <= PLAYOFF_SEASON_END_MONTH
+
+    _apply_playoff_features(feature_row, is_playoff=is_playoff)
+
+    # Override series-state if caller provided explicit values
+    if series_game_num is not None:
+        feature_row["SERIES_GAME_NUM"] = series_game_num
+    if home_series_wins is not None and away_series_wins is not None:
+        feature_row["HOME_SERIES_LEAD"] = home_series_wins - away_series_wins
+        feature_row["AWAY_SERIES_LEAD"] = away_series_wins - home_series_wins
+        feature_row["IS_CLOSEOUT"] = 1.0 if max(home_series_wins, away_series_wins) == 3 else 0.0
+        feature_row["IS_ELIMINATION"] = feature_row["IS_CLOSEOUT"]
+        # Recompute intensity with updated series state
+        gnum = feature_row.get("SERIES_GAME_NUM", 0) or 0
+        elim = feature_row.get("IS_ELIMINATION", 0) or 0
+        lead = abs(feature_row.get("HOME_SERIES_LEAD", 0) or 0)
+        feature_row["PLAYOFF_INTENSITY"] = min(
+            min(gnum * 10, 70) + (20 if elim else 0) + (10 if lead <= 1 else 0), 100
+        )
 
     ordered_cols = [col for col in base_cols if col in feature_row]
     feature_frame = pd.DataFrame([{col: feature_row.get(col, 0.0) for col in ordered_cols}])

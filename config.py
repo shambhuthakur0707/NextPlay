@@ -59,7 +59,7 @@ NBA_TEAMS = sorted([
 SEASONS = ["2023-24", "2024-25", "2025-26"]
 
 # Whether to include playoff games when pulling data / rebuilding models
-INCLUDE_PLAYOFFS = False
+INCLUDE_PLAYOFFS = True
 
 # Weight to apply to playoff rows during training (0 < weight <= 1).
 # A value <1 downweights playoff games to reduce their influence.
@@ -67,6 +67,14 @@ WEIGHT_PLAYOFF_ROWS = 0.3
 
 # Use separate playoff models during playoff season (April-June)
 USE_PLAYOFF_MODELS = True
+
+# Playoff model training: blend ratio of all-data to playoff-only data.
+# 0.7 means 70% of training weight comes from all games (with playoff
+# upweighting) and 30% from a playoff-only fine-tune pass.
+PLAYOFF_BLEND_RATIO = 0.7
+
+# Upweight factor for playoff rows in the blended training
+PLAYOFF_UPWEIGHT_FACTOR = 3.0
 
 
 # ????????????????????????????????????????????????????????????
@@ -191,6 +199,17 @@ ELO_FEATURES = [
     "HOME_ELO", "AWAY_ELO", "ELO_DIFF", "ELO_EXPECTED",
 ]
 
+# Playoff-specific features
+PLAYOFF_FEATURES = [
+    "IS_PLAYOFF",
+    "PLAYOFF_HOME_BOOST", "PLAYOFF_ROAD_PENALTY",
+    "PLAYOFF_REST_ADVANTAGE",
+    "HOME_PLAYOFF_WIN_PCT", "AWAY_PLAYOFF_WIN_PCT",
+    "SERIES_GAME_NUM", "IS_ELIMINATION", "IS_CLOSEOUT",
+    "HOME_SERIES_LEAD", "AWAY_SERIES_LEAD",
+    "PLAYOFF_INTENSITY",
+]
+
 # Stacked total model features
 STACKED_TOTAL_FEATURES = [
     "PRED_HOME", "PRED_AWAY", "PRED_SUM", "PRED_MARGIN",
@@ -198,6 +217,8 @@ STACKED_TOTAL_FEATURES = [
     "HOME_DEF_ROLL10", "AWAY_DEF_ROLL10",
     "HOME_ELO", "AWAY_ELO", "ELO_DIFF",
     "COMBINED_PTS_ROLL10",
+    "IS_PLAYOFF", "PLAYOFF_HOME_BOOST", "PLAYOFF_INTENSITY",
+    "IS_ELIMINATION", "IS_CLOSEOUT",
 ]
 
 # ?? Combined final feature list ??????????????????????????????
@@ -216,6 +237,7 @@ FEATURE_COLS_FINAL = (
     + PLAYER_FEATURES
     + MARGIN_FEATURES
     + ELO_FEATURES
+    + PLAYOFF_FEATURES
 )
 
 # Metadata columns (not features -- kept for reference)
@@ -256,6 +278,33 @@ LGB_PARAMS = {
     "verbose": -1,
 }
 
+XGB_PARAMS = {
+    "n_estimators": 500,
+    "learning_rate": 0.05,
+    "max_depth": 6,
+    "min_child_weight": 5,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.0,
+    "random_state": 42,
+    "n_jobs": -1,
+    "verbosity": 0,
+}
+
+CATBOOST_PARAMS = {
+    "iterations": 500,
+    "learning_rate": 0.05,
+    "depth": 6,
+    "l2_leaf_reg": 3,
+    "random_seed": 42,
+    "verbose": 0,
+}
+
+# Enable VotingRegressor ensemble: blend top-N models per target
+VOTING_ENSEMBLE = True
+VOTING_TOP_N = 3
+
 
 # ????????????????????????????????????????????????????????????
 # TRAINING CONFIG
@@ -278,4 +327,4 @@ EWM_SPAN = 10
 API_DELAY = 0.6
 
 # Model version tag
-MODEL_VERSION = "v8"
+MODEL_VERSION = "v9"

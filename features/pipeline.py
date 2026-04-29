@@ -16,6 +16,7 @@ from features.matchup import add_matchup_features
 from features.shots import merge_shot_profiles
 from features.players import add_player_features
 from features.elo import add_elo_features
+from features.playoff import add_playoff_features
 from config import FEATURE_COLS_FINAL, META_COLS, ELO_RATINGS_PATH
 
 
@@ -95,8 +96,12 @@ def build_full_features(games, shot_df=None, player_impact_df=None,
         print("  10/11 Player features -- SKIPPED (no data)")
 
     # Step 11: ELO ratings
-    print("  11/11 ELO rating features...")
+    print("  11/12 ELO rating features...")
     df = add_elo_features(df, elo_path=elo_path)
+
+    # Step 12: Playoff-specific features
+    print("  12/12 Playoff features...")
+    df = add_playoff_features(df)
 
     # Add margin rolling (V7 feature)
     df["HOME_ROLL10_MARGIN"] = df.groupby("HOME_TEAM")[

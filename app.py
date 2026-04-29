@@ -364,6 +364,31 @@ elif page == "🏀 Game Predictor":
                 if away_suggestions:
                     st.caption("Matches: " + ", ".join(away_suggestions))
 
+    # Playoff series context (shown during playoff season)
+    series_game_num = None
+    home_series_wins = None
+    away_series_wins = None
+    if is_playoff_season():
+        with st.expander("🏆 Playoff Series Context (Optional)", expanded=True):
+            st.caption("Providing series state improves playoff predictions significantly.")
+            sc1, sc2, sc3 = st.columns(3)
+            with sc1:
+                series_game_num = st.number_input(
+                    "Game # in series", min_value=1, max_value=7,
+                    value=1, step=1)
+            with sc2:
+                home_series_wins = st.number_input(
+                    f"{home_team} series wins", min_value=0, max_value=3,
+                    value=0, step=1)
+            with sc3:
+                away_series_wins = st.number_input(
+                    f"{away_team} series wins", min_value=0, max_value=3,
+                    value=0, step=1)
+            if home_series_wins + away_series_wins >= series_game_num:
+                pass  # valid state
+            if max(home_series_wins, away_series_wins) == 3:
+                st.info("⚡ Closeout/elimination game — model applies intensity boost")
+
     home_out = [x.strip() for x in home_inj_str.split(",") if x.strip()] \
         if home_inj_str else []
     away_out = [x.strip() for x in away_inj_str.split(",") if x.strip()] \
@@ -387,6 +412,9 @@ elif page == "🏀 Game Predictor":
                 feature_cols=feature_cols,
                 home_out=home_out, away_out=away_out,
                 verbose=False,
+                series_game_num=series_game_num,
+                home_series_wins=home_series_wins,
+                away_series_wins=away_series_wins,
             )
 
         if result is None:
