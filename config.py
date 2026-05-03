@@ -3,14 +3,14 @@
 NextPlay -- Configuration
 ========================
 Central configuration for all constants, paths, and feature definitions.
-Uses the V8 model feature set and stacked total model metadata.
+Uses the V9 model feature set and stacked total model metadata.
 """
 
 import os
 
-# ????????????????????????????????????????????????????????????
+# ─────────────────────────────────────────────────────────────
 # PATHS
-# ????????????????????????????????????????????????????????????
+# ─────────────────────────────────────────────────────────────
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -36,19 +36,19 @@ MODEL_A_PATH = os.path.join(DATA_DIR, "model_A_home.pkl")
 MODEL_B_PATH = os.path.join(DATA_DIR, "model_B_away.pkl")
 MODEL_C_PATH = os.path.join(DATA_DIR, "model_C_total.pkl")
 
-# Playoff model files (trained on IS_PLAYOFF==True data only)
+# Playoff model files
 MODEL_A_PLAYOFF_PATH = os.path.join(DATA_DIR, "model_A_playoff_home.pkl")
 MODEL_B_PLAYOFF_PATH = os.path.join(DATA_DIR, "model_B_playoff_away.pkl")
 MODEL_C_PLAYOFF_PATH = os.path.join(DATA_DIR, "model_C_playoff_total.pkl")
 
-# Playoff season month range (e.g., April-June = 4-6); use during these months
+# Playoff season month range (April-June)
 PLAYOFF_SEASON_START_MONTH = 4
 PLAYOFF_SEASON_END_MONTH = 6
 
 
-# ????????????????????????????????????????????????????????????
+# ─────────────────────────────────────────────────────────────
 # NBA TEAMS
-# ????????????????????????????????????????????????????????????
+# ─────────────────────────────────────────────────────────────
 
 NBA_TEAMS = sorted([
     "ATL", "BOS", "BKN", "CHA", "CHI", "CLE", "DAL", "DEN", "DET", "GSW",
@@ -62,24 +62,21 @@ SEASONS = ["2023-24", "2024-25", "2025-26"]
 INCLUDE_PLAYOFFS = True
 
 # Weight to apply to playoff rows during training (0 < weight <= 1).
-# A value <1 downweights playoff games to reduce their influence.
 WEIGHT_PLAYOFF_ROWS = 0.3
 
 # Use separate playoff models during playoff season (April-June)
 USE_PLAYOFF_MODELS = True
 
-# Playoff model training: blend ratio of all-data to playoff-only data.
-# 0.7 means 70% of training weight comes from all games (with playoff
-# upweighting) and 30% from a playoff-only fine-tune pass.
+# Playoff model training blend ratio
 PLAYOFF_BLEND_RATIO = 0.7
 
-# Upweight factor for playoff rows in the blended training
+# Upweight factor for playoff rows in blended training
 PLAYOFF_UPWEIGHT_FACTOR = 3.0
 
 
-# ????????????????????????????????????????????????????????????
-# FEATURE COLUMNS -- V8 FINAL
-# ????????????????????????????????????????????????????????????
+# ─────────────────────────────────────────────────────────────
+# FEATURE COLUMNS -- V9 FINAL
+# ─────────────────────────────────────────────────────────────
 
 # Rolling form -- home team
 ROLLING_HOME_FEATURES = [
@@ -115,9 +112,11 @@ MATCHUP_FEATURES = [
 ]
 
 # Rest + momentum
+# FIX: Removed HOME_TRAVEL_DIST -- it is hardcoded to 0.0 in rest_streak.py
+#      (home team doesn't travel), making it a constant useless feature.
 REST_STREAK_FEATURES = [
     "HOME_REST_DAYS", "AWAY_REST_DAYS", "REST_DAYS_DIFF",
-    "HOME_TRAVEL_DIST", "AWAY_TRAVEL_DIST", "TRAVEL_DIFF",
+    "AWAY_TRAVEL_DIST", "TRAVEL_DIFF",
     "HOME_STREAK", "AWAY_STREAK", "STREAK_DIFF",
 ]
 
@@ -166,14 +165,15 @@ SOS_FEATURES = [
 ]
 
 # Market lines
+# FIX: Removed MODEL_TOTAL_VS_MARKET and MODEL_MARGIN_VS_MARKET.
+#      These are inference-only features that require a trained model to compute.
+#      They cannot exist in training data and were causing silent NaN columns.
+#      Compute them at prediction time in prediction/predict.py if needed.
 MARKET_FEATURES = [
-    "MARKET_TOTAL_LINE", "MARKET_HOME_LINE",
-    "MARKET_TOTAL_MOVE", "MARKET_SPREAD_MOVE",
-    "MARKET_HOME_IMPLIED", "MARKET_AWAY_IMPLIED",
-    "MODEL_TOTAL_VS_MARKET", "MODEL_MARGIN_VS_MARKET",
+    "MARKET_TOTAL_LINE", "MARKET_HOME_LINE"
 ]
 
-# Live total calibration: weight applied to the sportsbook total when available.
+# Live total calibration: weight applied to sportsbook total when available.
 MARKET_TOTAL_BLEND_WEIGHT = 0.65
 
 # Player impact
@@ -211,17 +211,21 @@ PLAYOFF_FEATURES = [
 ]
 
 # Stacked total model features
+# FIX: Removed PLAYOFF_HOME_BOOST, IS_ELIMINATION, IS_CLOSEOUT from meta-features.
+#      These were confirmed missing from the CSV per the leakage audit, causing
+#      Model C to train on NaN meta-features. They remain in PLAYOFF_FEATURES
+#      for the base models. Re-add here once confirmed present in rebuilt CSV.
 STACKED_TOTAL_FEATURES = [
     "PRED_HOME", "PRED_AWAY", "PRED_SUM", "PRED_MARGIN",
     "HOME_ROLL10_PTS", "AWAY_ROLL10_PTS",
     "HOME_DEF_ROLL10", "AWAY_DEF_ROLL10",
     "HOME_ELO", "AWAY_ELO", "ELO_DIFF",
     "COMBINED_PTS_ROLL10",
-    "IS_PLAYOFF", "PLAYOFF_HOME_BOOST", "PLAYOFF_INTENSITY",
-    "IS_ELIMINATION", "IS_CLOSEOUT",
+    "IS_PLAYOFF",
+    "PLAYOFF_INTENSITY",
 ]
 
-# ?? Combined final feature list ??????????????????????????????
+# ── Combined final feature list ───────────────────────────────
 FEATURE_COLS_FINAL = (
     ROLLING_HOME_FEATURES
     + ROLLING_AWAY_FEATURES
@@ -240,12 +244,15 @@ FEATURE_COLS_FINAL = (
     + PLAYOFF_FEATURES
 )
 
-# Metadata columns (not features -- kept for reference)
+# Metadata columns (not features -- kept for reference/joins)
+# FIX: Removed IS_PLAYOFF from META_COLS. It is already in PLAYOFF_FEATURES
+#      above, and having it in both caused duplicate columns in the final
+#      DataFrame selection in pipeline.py, silently breaking column ops.
 META_COLS = [
     "GAME_ID", "GAME_DATE", "SEASON",
     "HOME_TEAM", "AWAY_TEAM",
     "HOME_PTS", "AWAY_PTS", "TOTAL_PTS", "HOME_WIN",
-    "SEASON_TYPE", "IS_PLAYOFF",
+    "SEASON_TYPE",
 ]
 
 # Target columns
@@ -255,9 +262,9 @@ TARGET_TOTAL = "TOTAL_PTS"
 TARGET_WIN   = "HOME_WIN"
 
 
-# ????????????????????????????????????????????????????????????
+# ─────────────────────────────────────────────────────────────
 # MODEL HYPERPARAMETERS
-# ????????????????????????????????????????????????????????????
+# ─────────────────────────────────────────────────────────────
 
 RF_PARAMS = {
     "n_estimators": 400,
@@ -306,9 +313,9 @@ VOTING_ENSEMBLE = True
 VOTING_TOP_N = 3
 
 
-# ????????????????????????????????????????????????????????????
+# ─────────────────────────────────────────────────────────────
 # TRAINING CONFIG
-# ????????????????????????????????????????????????????????????
+# ─────────────────────────────────────────────────────────────
 
 # Garbage time filter: remove blowouts > 25pt margin from training
 BLOWOUT_MARGIN_THRESHOLD = 25

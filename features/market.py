@@ -26,6 +26,8 @@ def _normalize_market_frame(market_df):
         "SPREAD_HOME": "CLOSE_HOME_LINE",
         "CLOSE_SPREAD": "CLOSE_HOME_LINE",
         "TOTAL": "CLOSE_TOTAL",
+        "MARKET_TOTAL_LINE": "CLOSE_TOTAL",
+        "MARKET_HOME_LINE":  "CLOSE_HOME_LINE",
     }
     for src, dst in rename_map.items():
         if src in df.columns and dst not in df.columns:

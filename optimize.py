@@ -3,6 +3,11 @@
 Candidates: RandomForest, GradientBoosting, LightGBM, XGBoost, CatBoost.
 After finding the best individual model per target, optionally builds a
 VotingRegressor ensemble from the top-N performers.
+
+FIX (v9): Added `candidates` parameter to run_optimization so full_rebuild
+can restrict to fast candidates (RF-400, LGB-500, LGB-800, LGB-1000) without
+running slow GB-500/GB-800 variants. Also tightened default train_window
+and step to match full_rebuild.py defaults (400/100).
 """
 import warnings
 import pickle
@@ -114,18 +119,9 @@ def _build_model_configs():
 # ════════════════════════════════════════════════════════════
 
 def _build_voting_ensemble(configs, results, target, top_n=VOTING_TOP_N):
-    """Build a VotingRegressor from the top-N models for a given target.
-
-    Args:
-        configs: dict of name -> model factory lambda
-        results: dict of name -> {target: mae}
-        target: target column name (e.g. 'HOME_PTS')
-        top_n: number of models to include in the ensemble
-
-    Returns:
-        (VotingRegressor factory lambda, list of model names used)
-    """
-    ranked = sorted(results.keys(), key=lambda n: results[n][target])
+    """Build a VotingRegressor from the top-N models for a given target."""
+    ranked = sorted([n for n in results.keys() if target in results[n]],
+                    key=lambda n: results[n][target])
     top_names = ranked[:top_n]
 
     def _factory():
@@ -150,8 +146,8 @@ def _apply_garbage_filter(train_df):
     ]
 
 
-def _time_split_mae(model_df, model_fn, target, feature_cols, apply_filter=True,
-                     **_kwargs):
+def _time_split_mae(model_df, model_fn, target, feature_cols,
+                    apply_filter=True, **_kwargs):
     df = model_df.copy()
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
     df = df.sort_values("GAME_DATE").reset_index(drop=True)
@@ -168,23 +164,15 @@ def _time_split_mae(model_df, model_fn, target, feature_cols, apply_filter=True,
     if len(train) < 50 or len(test) == 0:
         return np.nan
 
-    X_train = train[feature_cols]
-    X_test = test[feature_cols]
-
     model = model_fn()
-    model.fit(X_train, train[target])
-    pred = model.predict(X_test)
+    model.fit(train[feature_cols], train[target])
+    pred = model.predict(test[feature_cols])
     return mean_absolute_error(test[target], pred)
 
 
 def _walk_forward_mae(
-    model_df,
-    model_fn,
-    target,
-    feature_cols,
-    train_window=800,
-    step=50,
-    apply_filter=True,
+    model_df, model_fn, target, feature_cols,
+    train_window=400, step=100, apply_filter=True,
 ):
     df = model_df.copy()
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
@@ -211,18 +199,12 @@ def _walk_forward_mae(
         if len(train) < 50 or len(test) == 0:
             continue
 
-        X_train = train[feature_cols]
-        X_test = test[feature_cols]
-
         model = model_fn()
-        model.fit(X_train, train[target])
-        pred = model.predict(X_test)
+        model.fit(train[feature_cols], train[target])
+        pred = model.predict(test[feature_cols])
         errors.extend(np.abs(pred - test[target].values))
 
-    if len(errors) == 0:
-        return np.nan
-
-    return float(np.mean(errors))
+    return float(np.mean(errors)) if errors else np.nan
 
 
 # ════════════════════════════════════════════════════════════
@@ -275,7 +257,7 @@ def _stacked_total_time_split_mae(model_df, home_model_fn, away_model_fn,
 
 def _stacked_total_walk_forward_mae(model_df, home_model_fn, away_model_fn,
                                     meta_model_fn, feature_cols,
-                                    train_window=800, step=50,
+                                    train_window=400, step=100,
                                     apply_filter=True):
     df = model_df.copy()
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
@@ -326,10 +308,7 @@ def _stacked_total_walk_forward_mae(model_df, home_model_fn, away_model_fn,
         pred = meta_model.predict(test_meta)
         errors.extend(np.abs(pred - test["TOTAL_PTS"].values))
 
-    if len(errors) == 0:
-        return np.nan
-
-    return float(np.mean(errors))
+    return float(np.mean(errors)) if errors else np.nan
 
 
 # ════════════════════════════════════════════════════════════
@@ -339,29 +318,26 @@ def _stacked_total_walk_forward_mae(model_df, home_model_fn, away_model_fn,
 def run_optimization(
     model_df,
     use_walk_forward=True,
-    train_window=800,
-    step=50,
+    train_window=400,
+    step=100,
     apply_filter=True,
     use_voting=None,
     verbose=True,
+    candidates=None,
 ):
     """Run full model optimization across all candidate algorithms.
-
-    Steps:
-        1. Evaluate every candidate config for HOME_PTS and AWAY_PTS.
-        2. Pick the best single model per target.
-        3. Optionally build a VotingRegressor from the top-N models.
-        4. Evaluate the stacked total model using the best base configs.
-        5. Train final models on full data and save to disk.
 
     Args:
         model_df: feature-engineered DataFrame
         use_walk_forward: walk-forward evaluation (True) or 80/20 split (False)
-        train_window: walk-forward training window
-        step: walk-forward step size
+        train_window: walk-forward training window (default: 400)
+        step: walk-forward step size (default: 100)
         apply_filter: apply garbage-time filter
         use_voting: override config.VOTING_ENSEMBLE (None = use config)
         verbose: print progress
+        candidates: optional list of candidate names to restrict evaluation.
+                    e.g. ["RF-400", "LGB-500", "LGB-800", "LGB-1000"]
+                    If None, all available candidates are used.
 
     Returns:
         dict with results, best_models, saved configs, mae_total
@@ -369,7 +345,20 @@ def run_optimization(
     if use_voting is None:
         use_voting = VOTING_ENSEMBLE
 
-    configs = _build_model_configs()
+    all_configs = _build_model_configs()
+
+    # FIX: filter to requested candidates if specified
+    if candidates is not None:
+        missing = [c for c in candidates if c not in all_configs]
+        if missing:
+            print(f"[WARN] Requested candidates not found: {missing}")
+        configs = {k: v for k, v in all_configs.items() if k in candidates}
+        if not configs:
+            print("[WARN] No valid candidates after filtering -- using all configs")
+            configs = all_configs
+    else:
+        configs = all_configs
+
     feature_cols = [c for c in FEATURE_COLS_FINAL if c in model_df.columns]
     targets = {
         "HOME_PTS": ("Home", MODEL_A_PATH),
@@ -487,7 +476,6 @@ def run_optimization(
         print("PHASE 3 -- Stacked total model evaluation")
         print(f"{'-' * 60}")
 
-    # Use RF for the meta-model (stacked total) by default
     stacked_meta_fn = lambda: RandomForestRegressor(**RF_PARAMS)
 
     if use_walk_forward:
@@ -520,7 +508,6 @@ def run_optimization(
         print("PHASE 4 -- Training final models on full data")
         print(f"{'-' * 60}")
 
-    saved = {}
     df = model_df.copy()
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
     df = df.sort_values("GAME_DATE").reset_index(drop=True)
@@ -528,6 +515,7 @@ def run_optimization(
     df = df.dropna(subset=feature_cols)
     X_full = df[feature_cols]
 
+    saved = {}
     for target, (best_name, path) in best_models.items():
         model = configs[best_name]()
         model.fit(X_full, df[target])
@@ -538,7 +526,6 @@ def run_optimization(
             label = "Home" if target == "HOME_PTS" else "Away"
             print(f"  [SAVED] {label}: {best_name} -> {path}")
 
-    # Train stacked total with best base models
     home_model = configs[best_home_name]()
     away_model = configs[best_away_name]()
     home_model.fit(X_full, df["HOME_PTS"])
@@ -559,7 +546,6 @@ def run_optimization(
     if verbose:
         print(f"  [SAVED] Total: STACKED -> {MODEL_C_PATH}")
 
-    # -- Summary --
     if verbose:
         print(f"\n{'=' * 60}")
         print("OPTIMIZATION COMPLETE")

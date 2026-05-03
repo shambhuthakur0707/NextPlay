@@ -30,7 +30,7 @@ from optimize import run_optimization
 def full_rebuild(seasons=None, skip_api=False,
                  run_model_optimization=True,
                  optimize_walk_forward=True,
-                 train_window=800, step=50,
+                 train_window=400, step=100,
                  include_market_lines=True,
                  include_playoffs=None):
     """
@@ -138,6 +138,7 @@ def full_rebuild(seasons=None, skip_api=False,
             use_walk_forward=optimize_walk_forward,
             train_window=train_window,
             step=step,
+            candidates=["RF-400", "LGB-500", "LGB-800", "LGB-1000"],
         )
     else:
         result = train_models(
