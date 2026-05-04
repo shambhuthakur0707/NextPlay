@@ -4,8 +4,8 @@ NextPlay is an end-to-end NBA score prediction system with data ingestion, featu
 
 Current codebase status:
 - Model version: V9
-- Base model feature set: 157 engineered features (down from 160 after audit fixes)
-- Total-points model: stacked meta-model (14 meta features)
+- Base model feature set: 155 engineered features (down from 160 after audit fixes)
+- Total-points model: stacked meta-model (18 meta features)
 - Live prediction supports injury adjustments and optional sportsbook-total blending
 - Source of truth for version/features: `config.py` (`MODEL_VERSION`, `FEATURE_COLS_FINAL`, `STACKED_TOTAL_FEATURES`)
 
@@ -267,7 +267,7 @@ python pipelines/full_rebuild.py
 
 ## Feature Coverage (From `config.py`)
 
-`FEATURE_COLS_FINAL` currently contains **157 base features**:
+`FEATURE_COLS_FINAL` currently contains **155 base features**:
 
 | Category | Count | Notes |
 |---|---:|---|
@@ -286,9 +286,9 @@ python pipelines/full_rebuild.py
 | Margin rolling | 2 | |
 | ELO | 4 | |
 | Playoff | 12 | Vectorized, leakage-safe |
-| **Total** | **157** | |
+| **Total** | **155** | |
 
-Model C (`STACKED_TOTAL_FEATURES`) uses **14 meta features**.
+Model C (`STACKED_TOTAL_FEATURES`) uses **18 meta features**.
 `PLAYOFF_HOME_BOOST`, `IS_ELIMINATION`, `IS_CLOSEOUT` temporarily removed from
 Model C meta-features pending confirmation they are present in rebuilt CSV.
 
