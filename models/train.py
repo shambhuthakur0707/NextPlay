@@ -3,15 +3,23 @@
 NextPlay -- Model Training
 ===========================
 Trains models A (home), B (away), C (total) using any sklearn-compatible
-estimator.  Defaults to RandomForest but the optimizer can inject XGBoost,
+estimator. Defaults to RandomForest but the optimizer can inject XGBoost,
 CatBoost, LightGBM, or VotingRegressor.
 Includes garbage time and OT filtering for clean training data.
+
+FIX (v9): Model C now uses 5-fold out-of-fold (OOF) predictions from
+Models A and B instead of in-sample predictions. This is the correct
+stacking procedure -- training Model C on A/B's predictions of their
+own training data causes overfitting because those predictions are
+near-perfect. OOF predictions are honest estimates of what A/B would
+predict on unseen data, giving Model C a realistic signal to learn from.
 """
 import pickle
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
+from sklearn.model_selection import KFold
 
 from config import (
     RF_PARAMS, FEATURE_COLS_FINAL,
@@ -25,17 +33,12 @@ from models.stacking import build_total_meta_features
 
 
 def _default_model_factory():
-    """Return a default RandomForestRegressor using config params."""
     return RandomForestRegressor(**RF_PARAMS)
 
 
 def filter_training_data(train_df):
-    """
-    Remove blowout and overtime games from training data.
-    These outliers teach the model wrong patterns.
-    """
+    """Remove blowout and overtime games from training data."""
     before = len(train_df)
-
     clean = train_df[
         (train_df["PTS_MARGIN"].abs() <= BLOWOUT_MARGIN_THRESHOLD) &
         ~(
@@ -43,25 +46,76 @@ def filter_training_data(train_df):
             (train_df["PTS_MARGIN"].abs() < OT_MARGIN_THRESHOLD)
         )
     ].copy()
-
     after = len(clean)
     print(f"  Garbage time filter: {before} -> {after} "
           f"(removed {before - after} games, "
           f"{(before - after) / before:.1%})")
-
     return clean
 
 
+def _build_oof_predictions(X, y_home, y_away, model_factory, n_splits=5):
+    """
+    Build out-of-fold predictions for Models A and B.
+
+    Instead of predicting on training data (which causes overfitting),
+    we use k-fold cross-validation to generate honest predictions:
+    - Split training data into N folds
+    - For each fold: train on N-1 folds, predict on the held-out fold
+    - Stitch predictions back together in original order
+
+    This gives Model C realistic signal -- the predictions it sees
+    are from models that never saw those rows during training.
+
+    Args:
+        X: feature matrix
+        y_home: home points target
+        y_away: away points target
+        model_factory: callable returning a fresh model instance
+        n_splits: number of CV folds (default 5)
+
+    Returns:
+        oof_home: array of OOF home predictions
+        oof_away: array of OOF away predictions
+    """
+    oof_home = np.zeros(len(X))
+    oof_away = np.zeros(len(X))
+
+    kf = KFold(n_splits=n_splits, shuffle=False)  # no shuffle -- temporal order
+
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
+        X_fold_train = X.iloc[train_idx]
+        X_fold_val = X.iloc[val_idx]
+
+        y_home_train = y_home.iloc[train_idx]
+        y_away_train = y_away.iloc[train_idx]
+
+        model_a = model_factory()
+        model_b = model_factory()
+
+        model_a.fit(X_fold_train, y_home_train)
+        model_b.fit(X_fold_train, y_away_train)
+
+        oof_home[val_idx] = model_a.predict(X_fold_val)
+        oof_away[val_idx] = model_b.predict(X_fold_val)
+
+    return oof_home, oof_away
+
+
 def train_models(model_df, train_seasons=None, test_season=None,
-                 apply_filter=True, weight_playoff_rows=None):
+                 apply_filter=True, weight_playoff_rows=None,
+                 n_oof_splits=5):
     """
     Train RF models A/B/C on the provided dataset.
+
+    Model C uses OOF predictions from A/B to avoid stacking leakage.
 
     Args:
         model_df: feature-engineered DataFrame
         train_seasons: list of seasons for training
         test_season: season for testing
         apply_filter: whether to apply garbage time filter
+        weight_playoff_rows: playoff row sample weight
+        n_oof_splits: number of OOF folds for Model C training (default 5)
 
     Returns:
         dict with models, MAE scores, and feature columns used
@@ -73,7 +127,6 @@ def train_models(model_df, train_seasons=None, test_season=None,
         train = model_df[model_df["SEASON"].isin(train_seasons)].copy()
         test = model_df[model_df["SEASON"] == test_season].copy()
     else:
-        # 80/20 time-based split
         model_df = model_df.sort_values("GAME_DATE").reset_index(drop=True)
         split_idx = int(len(model_df) * 0.80)
         train = model_df.iloc[:split_idx].copy()
@@ -88,11 +141,9 @@ def train_models(model_df, train_seasons=None, test_season=None,
     X_train = train[feature_cols]
     X_test = test[feature_cols]
 
-    # Build sample weights to downweight playoff rows if requested
     if weight_playoff_rows is None:
         weight_playoff_rows = WEIGHT_PLAYOFF_ROWS
 
-    # default weight = 1.0 for regular-season rows
     train_weights = np.ones(len(train), dtype=float)
     if "IS_PLAYOFF" in train.columns and weight_playoff_rows is not None:
         train_weights = np.where(train["IS_PLAYOFF"], weight_playoff_rows, 1.0)
@@ -112,19 +163,30 @@ def train_models(model_df, train_seasons=None, test_season=None,
     rf_B.fit(X_train, train["AWAY_PTS"], sample_weight=train_weights)
     mae_away = mean_absolute_error(test["AWAY_PTS"], rf_B.predict(X_test))
 
-    # Model C: stacked total points
+    # Model C: stacked total using OOF predictions
+    # FIX: use OOF predictions instead of in-sample predictions
+    print(f"  Building OOF predictions for Model C ({n_oof_splits}-fold)...")
+    oof_home, oof_away = _build_oof_predictions(
+        X_train,
+        train["HOME_PTS"],
+        train["AWAY_PTS"],
+        _default_model_factory,
+        n_splits=n_oof_splits,
+    )
+
     train_meta = build_total_meta_features(
-        train[feature_cols],
-        rf_A.predict(X_train),
-        rf_B.predict(X_train),
+        X_train,
+        oof_home,      # OOF predictions -- honest signal
+        oof_away,      # OOF predictions -- honest signal
         feature_cols=meta_feature_cols,
     )
     test_meta = build_total_meta_features(
-        test[feature_cols],
-        rf_A.predict(X_test),
-        rf_B.predict(X_test),
+        X_test,
+        rf_A.predict(X_test),   # test predictions from fully trained A
+        rf_B.predict(X_test),   # test predictions from fully trained B
         feature_cols=meta_feature_cols,
     )
+
     rf_C = RandomForestRegressor(**RF_PARAMS)
     rf_C.fit(train_meta, train["TOTAL_PTS"], sample_weight=train_weights)
     mae_total = mean_absolute_error(test["TOTAL_PTS"], rf_C.predict(test_meta))
@@ -150,7 +212,6 @@ def train_models(model_df, train_seasons=None, test_season=None,
 
 def save_models(models_dict, path_a=MODEL_A_PATH,
                 path_b=MODEL_B_PATH, path_c=MODEL_C_PATH):
-    """Save trained models to pickle files."""
     with open(path_a, "wb") as f:
         pickle.dump(models_dict["model_A"], f)
     with open(path_b, "wb") as f:
@@ -162,7 +223,6 @@ def save_models(models_dict, path_a=MODEL_A_PATH,
 
 def load_models(path_a=MODEL_A_PATH, path_b=MODEL_B_PATH,
                 path_c=MODEL_C_PATH):
-    """Load trained models from pickle files."""
     with open(path_a, "rb") as f:
         model_A = pickle.load(f)
     with open(path_b, "rb") as f:
@@ -174,27 +234,12 @@ def load_models(path_a=MODEL_A_PATH, path_b=MODEL_B_PATH,
 
 
 def train_models_v2(model_df, model_factory_a=None, model_factory_b=None,
-                     model_factory_c=None, train_seasons=None,
-                     test_season=None, apply_filter=True,
-                     weight_playoff_rows=None):
-    """Train models A/B/C using injectable model factories.
-
-    This is the flexible version of train_models() that accepts any
-    sklearn-compatible estimator factory.  Used by the optimizer to
-    plug in XGBoost, CatBoost, VotingRegressor, etc.
-
-    Args:
-        model_df: feature-engineered DataFrame
-        model_factory_a: callable -> estimator for home score (default: RF)
-        model_factory_b: callable -> estimator for away score (default: RF)
-        model_factory_c: callable -> estimator for total score (default: RF)
-        train_seasons: list of seasons for training
-        test_season: season for testing
-        apply_filter: whether to apply garbage time filter
-        weight_playoff_rows: playoff row sample weight
-
-    Returns:
-        dict with models, MAE scores, and feature columns used
+                    model_factory_c=None, train_seasons=None,
+                    test_season=None, apply_filter=True,
+                    weight_playoff_rows=None, n_oof_splits=5):
+    """
+    Train models A/B/C using injectable model factories.
+    Model C uses OOF predictions to avoid stacking leakage.
     """
     model_factory_a = model_factory_a or _default_model_factory
     model_factory_b = model_factory_b or _default_model_factory
@@ -251,15 +296,29 @@ def train_models_v2(model_df, model_factory_a=None, model_factory_b=None,
         rf_B.fit(X_train, train["AWAY_PTS"])
     mae_away = mean_absolute_error(test["AWAY_PTS"], rf_B.predict(X_test))
 
-    # Model C (stacked)
+    # Model C: OOF stacking
+    print(f"  Building OOF predictions for Model C ({n_oof_splits}-fold)...")
+    oof_home, oof_away = _build_oof_predictions(
+        X_train,
+        train["HOME_PTS"],
+        train["AWAY_PTS"],
+        model_factory_a,
+        n_splits=n_oof_splits,
+    )
+
     train_meta = build_total_meta_features(
-        train[feature_cols], rf_A.predict(X_train), rf_B.predict(X_train),
+        X_train,
+        oof_home,
+        oof_away,
         feature_cols=meta_feature_cols,
     )
     test_meta = build_total_meta_features(
-        test[feature_cols], rf_A.predict(X_test), rf_B.predict(X_test),
+        X_test,
+        rf_A.predict(X_test),
+        rf_B.predict(X_test),
         feature_cols=meta_feature_cols,
     )
+
     rf_C = model_factory_c()
     model_c_name = type(rf_C).__name__
     print(f"  Training Model C ({model_c_name})...")
@@ -291,21 +350,7 @@ def train_models_v2(model_df, model_factory_a=None, model_factory_b=None,
 def train_playoff_models(model_df, upweight_factor=None):
     """
     Train playoff-optimized models using ALL games with playoff upweighting.
-
-    Strategy: train on the full dataset but give playoff rows 3x weight.
-    The model learns general basketball patterns from reg-season data AND
-    playoff-specific patterns (home-court boost, elimination intensity, etc.)
-    from the upweighted playoff rows + the new playoff feature columns.
-
-    This avoids the old problem of training on ~200 playoff-only games which
-    is far too small for RandomForest to learn meaningful splits.
-
-    Args:
-        model_df: feature-engineered DataFrame with IS_PLAYOFF column
-        upweight_factor: weight multiplier for playoff rows (default: config)
-
-    Returns:
-        dict with playoff models, MAE scores, and feature columns
+    Uses OOF predictions for Model C stacking.
     """
     from config import PLAYOFF_UPWEIGHT_FACTOR
 
@@ -325,17 +370,13 @@ def train_playoff_models(model_df, upweight_factor=None):
     model_df = model_df.sort_values("GAME_DATE").reset_index(drop=True)
     model_df = model_df.dropna(subset=feature_cols)
 
-    # 80/20 time-based split; test on playoff games in the holdout
     split_idx = int(len(model_df) * 0.80)
     train = model_df.iloc[:split_idx].copy()
     test_all = model_df.iloc[split_idx:].copy()
 
-    # Evaluate specifically on playoff games in the test set
     test_playoff = test_all[test_all["IS_PLAYOFF"] == 1].copy()
     test = test_playoff if len(test_playoff) >= 10 else test_all
 
-    # Build sample weights: upweight playoff rows
-    train_weights = np.ones(len(train), dtype=float)
     train_weights = np.where(
         train["IS_PLAYOFF"] == 1, upweight_factor, 1.0
     )
@@ -350,29 +391,37 @@ def train_playoff_models(model_df, upweight_factor=None):
           f"({int(test['IS_PLAYOFF'].sum())} playoff)")
     print(f"  [PLAYOFF] Features: {len(feature_cols)}")
 
-    # Model A: Home score
     rf_A = RandomForestRegressor(**RF_PARAMS)
     rf_A.fit(X_train, train["HOME_PTS"], sample_weight=train_weights)
     mae_home = mean_absolute_error(test["HOME_PTS"], rf_A.predict(X_test))
 
-    # Model B: Away score
     rf_B = RandomForestRegressor(**RF_PARAMS)
     rf_B.fit(X_train, train["AWAY_PTS"], sample_weight=train_weights)
     mae_away = mean_absolute_error(test["AWAY_PTS"], rf_B.predict(X_test))
 
-    # Model C: stacked total
+    # OOF stacking for playoff Model C
+    print(f"  [PLAYOFF] Building OOF predictions for Model C (5-fold)...")
+    oof_home, oof_away = _build_oof_predictions(
+        X_train,
+        train["HOME_PTS"],
+        train["AWAY_PTS"],
+        _default_model_factory,
+        n_splits=5,
+    )
+
     train_meta = build_total_meta_features(
-        train[feature_cols],
-        rf_A.predict(X_train),
-        rf_B.predict(X_train),
+        X_train,
+        oof_home,
+        oof_away,
         feature_cols=meta_feature_cols,
     )
     test_meta = build_total_meta_features(
-        test[feature_cols],
+        X_test,
         rf_A.predict(X_test),
         rf_B.predict(X_test),
         feature_cols=meta_feature_cols,
     )
+
     rf_C = RandomForestRegressor(**RF_PARAMS)
     rf_C.fit(train_meta, train["TOTAL_PTS"], sample_weight=train_weights)
     mae_total = mean_absolute_error(test["TOTAL_PTS"], rf_C.predict(test_meta))
@@ -397,8 +446,8 @@ def train_playoff_models(model_df, upweight_factor=None):
 
 
 def save_playoff_models(models_dict, path_a=MODEL_A_PLAYOFF_PATH,
-                        path_b=MODEL_B_PLAYOFF_PATH, path_c=MODEL_C_PLAYOFF_PATH):
-    """Save playoff models to pickle files."""
+                        path_b=MODEL_B_PLAYOFF_PATH,
+                        path_c=MODEL_C_PLAYOFF_PATH):
     with open(path_a, "wb") as f:
         pickle.dump(models_dict["model_A"], f)
     with open(path_b, "wb") as f:
@@ -411,7 +460,6 @@ def save_playoff_models(models_dict, path_a=MODEL_A_PLAYOFF_PATH,
 def load_playoff_models(path_a=MODEL_A_PLAYOFF_PATH,
                         path_b=MODEL_B_PLAYOFF_PATH,
                         path_c=MODEL_C_PLAYOFF_PATH):
-    """Load playoff models from pickle files."""
     try:
         with open(path_a, "rb") as f:
             model_A = pickle.load(f)
@@ -423,4 +471,3 @@ def load_playoff_models(path_a=MODEL_A_PLAYOFF_PATH,
         return {"model_A": model_A, "model_B": model_B, "model_C": model_C}
     except FileNotFoundError:
         return None
-

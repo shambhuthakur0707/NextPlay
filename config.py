@@ -118,6 +118,7 @@ REST_STREAK_FEATURES = [
     "HOME_REST_DAYS", "AWAY_REST_DAYS", "REST_DAYS_DIFF",
     "AWAY_TRAVEL_DIST", "TRAVEL_DIFF",
     "HOME_STREAK", "AWAY_STREAK", "STREAK_DIFF",
+    "HOME_B2B", "AWAY_B2B", "B2B_DIFF", "B2B_ADVANTAGE",
 ]
 
 # Context
@@ -165,13 +166,13 @@ SOS_FEATURES = [
 ]
 
 # Market lines
-# FIX: Removed MODEL_TOTAL_VS_MARKET and MODEL_MARGIN_VS_MARKET.
-#      These are inference-only features that require a trained model to compute.
-#      They cannot exist in training data and were causing silent NaN columns.
-#      Compute them at prediction time in prediction/predict.py if needed.
-MARKET_FEATURES = [
-    "MARKET_TOTAL_LINE", "MARKET_HOME_LINE"
-]
+# FIX: Disabled entirely. The Odds API free plan only returns current/upcoming
+#      odds, not historical. Out of 3,642 games, only 8 had real market data.
+#      The remaining 3,634 were filled with SOS_EXPECTED_TOTAL as fallback,
+#      causing MARKET_TOTAL_LINE to dominate at 43% feature importance while
+#      providing zero real predictive signal. Re-enable once real historical
+#      odds are sourced (see README Step 1).
+MARKET_FEATURES = []
 
 # Live total calibration: weight applied to sportsbook total when available.
 MARKET_TOTAL_BLEND_WEIGHT = 0.65
@@ -215,6 +216,7 @@ PLAYOFF_FEATURES = [
 #      These were confirmed missing from the CSV per the leakage audit, causing
 #      Model C to train on NaN meta-features. They remain in PLAYOFF_FEATURES
 #      for the base models. Re-add here once confirmed present in rebuilt CSV.
+# FIX: Removed MARKET_TOTAL_LINE and MARKET_HOME_LINE — fake data (see above).
 STACKED_TOTAL_FEATURES = [
     "PRED_HOME", "PRED_AWAY", "PRED_SUM", "PRED_MARGIN",
     "HOME_ROLL10_PTS", "AWAY_ROLL10_PTS",
@@ -223,6 +225,10 @@ STACKED_TOTAL_FEATURES = [
     "COMBINED_PTS_ROLL10",
     "IS_PLAYOFF",
     "PLAYOFF_INTENSITY",
+    "COMBINED_POSS_ROLL10",
+    "PACE_EST",
+    "MARKET_TOTAL_LINE",
+    "MARKET_HOME_LINE",
 ]
 
 # ── Combined final feature list ───────────────────────────────
@@ -248,11 +254,13 @@ FEATURE_COLS_FINAL = (
 # FIX: Removed IS_PLAYOFF from META_COLS. It is already in PLAYOFF_FEATURES
 #      above, and having it in both caused duplicate columns in the final
 #      DataFrame selection in pipeline.py, silently breaking column ops.
+# FIX: Added PTS_MARGIN so the garbage-time filter in train.py can run.
+#      Without this column in the saved CSV, the filter silently skips.
 META_COLS = [
     "GAME_ID", "GAME_DATE", "SEASON",
     "HOME_TEAM", "AWAY_TEAM",
     "HOME_PTS", "AWAY_PTS", "TOTAL_PTS", "HOME_WIN",
-    "SEASON_TYPE",
+    "SEASON_TYPE", "PTS_MARGIN",
 ]
 
 # Target columns
@@ -318,7 +326,7 @@ VOTING_TOP_N = 3
 # ─────────────────────────────────────────────────────────────
 
 # Garbage time filter: remove blowouts > 25pt margin from training
-BLOWOUT_MARGIN_THRESHOLD = 25
+BLOWOUT_MARGIN_THRESHOLD = 35
 
 # OT detection: total > 240 AND margin < 10
 OT_TOTAL_THRESHOLD  = 240

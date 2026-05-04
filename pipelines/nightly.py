@@ -19,9 +19,13 @@ from config import (
 )
 from ingestion.odds import pull_closing_market_lines
 from prediction.predict import predict_game
+from utils.helpers import disable_nba_api_ssl_verification
 
 
 NBA_TZ = ZoneInfo("America/New_York")
+
+
+disable_nba_api_ssl_verification()
 
 
 def _now_et():

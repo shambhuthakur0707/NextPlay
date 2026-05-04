@@ -102,6 +102,16 @@ def add_rest_and_streak(games):
     )
 
     df["REST_DAYS_DIFF"] = df["HOME_REST_DAYS"] - df["AWAY_REST_DAYS"]
+    # ── BACK-TO-BACK FLAGS ──────────────────────────────────────────────
+    # A team is on a back-to-back if they played yesterday (REST_DAYS == 1).
+    # B2B teams score ~3-4 fewer points and allow more on average.
+    df["HOME_B2B"] = (df["HOME_REST_DAYS"] == 1).astype(int)
+    df["AWAY_B2B"] = (df["AWAY_REST_DAYS"] == 1).astype(int)
+    df["B2B_DIFF"] = df["HOME_B2B"] - df["AWAY_B2B"]
+
+    # B2B disadvantage: 1 = home on B2B but away isn't, -1 = opposite
+    # This captures asymmetric fatigue between teams
+    df["B2B_ADVANTAGE"] = df["AWAY_B2B"] - df["HOME_B2B"]
 
     # ?? WIN STREAK ???????????????????????????????????????????
     home_wl = df[["GAME_DATE", "GAME_ID", "HOME_TEAM", "HOME_WL"]].copy()

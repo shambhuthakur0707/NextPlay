@@ -26,6 +26,7 @@ from config import (
 from ingestion.odds import pull_closing_market_lines
 from models.train import load_models, load_playoff_models
 from prediction.predict import predict_game
+from utils.helpers import disable_nba_api_ssl_verification
 from utils.metadata import (
     feature_category_counts,
     project_metadata_snapshot,
@@ -33,6 +34,9 @@ from utils.metadata import (
 
 
 NBA_TZ = ZoneInfo("America/New_York")
+
+
+disable_nba_api_ssl_verification()
 
 
 def nba_today_date():

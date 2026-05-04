@@ -4,6 +4,26 @@
 import numpy as np
 
 
+def disable_nba_api_ssl_verification():
+    """Disable SSL verification for nba_api's shared session.
+
+    This keeps the workaround scoped to nba_api requests so local
+    corporate/self-signed certificates do not break scoreboard fetches.
+    """
+    try:
+        import requests
+        from nba_api.stats.library.http import NBAStatsHTTP
+
+        session = NBAStatsHTTP.get_session()
+        session.verify = False
+        requests.packages.urllib3.disable_warnings(
+            requests.packages.urllib3.exceptions.InsecureRequestWarning
+        )
+        return session
+    except Exception:
+        return None
+
+
 def compute_streak(wl_list):
     """
     Compute running win/loss streak from a list of 'W'/'L' results.
